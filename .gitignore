@@ -1,0 +1,19 @@
+.DS_Store
+
+# Xcode
+DerivedData/
+build/
+*.xcuserstate
+xcuserdata/
+
+# Local signing and distribution output
+dist/
+*.xcarchive
+*.dmg
+*.pkg
+*.zip
+
+# Local test and tooling output
+*.xcresult
+.swiftpm/
+.build/

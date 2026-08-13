@@ -1,0 +1,374 @@
+// !$*UTF8*$!
+{
+	archiveVersion = 1;
+	classes = {
+	};
+	objectVersion = 77;
+	objects = {
+
+/* Begin PBXBuildFile section */
+		A00000000000000000000001 /* DeepSeekHarnessDeskApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = B00000000000000000000001 /* DeepSeekHarnessDeskApp.swift */; };
+		A00000000000000000000002 /* AppDelegate.swift in Sources */ = {isa = PBXBuildFile; fileRef = B00000000000000000000002 /* AppDelegate.swift */; };
+		A00000000000000000000003 /* AppState.swift in Sources */ = {isa = PBXBuildFile; fileRef = B00000000000000000000003 /* AppState.swift */; };
+		A00000000000000000000004 /* CrashRecoveryPolicy.swift in Sources */ = {isa = PBXBuildFile; fileRef = B00000000000000000000004 /* CrashRecoveryPolicy.swift */; };
+		A00000000000000000000005 /* HarnessHealthMonitor.swift in Sources */ = {isa = PBXBuildFile; fileRef = B00000000000000000000005 /* HarnessHealthMonitor.swift */; };
+		A00000000000000000000006 /* HarnessManager.swift in Sources */ = {isa = PBXBuildFile; fileRef = B00000000000000000000006 /* HarnessManager.swift */; };
+		A00000000000000000000007 /* HarnessState.swift in Sources */ = {isa = PBXBuildFile; fileRef = B00000000000000000000007 /* HarnessState.swift */; };
+		A00000000000000000000008 /* RuntimeManager.swift in Sources */ = {isa = PBXBuildFile; fileRef = B00000000000000000000008 /* RuntimeManager.swift */; };
+		A00000000000000000000009 /* HarnessWebView.swift in Sources */ = {isa = PBXBuildFile; fileRef = B00000000000000000000009 /* HarnessWebView.swift */; };
+		A0000000000000000000000A /* WebViewController.swift in Sources */ = {isa = PBXBuildFile; fileRef = B0000000000000000000000A /* WebViewController.swift */; };
+		A0000000000000000000000B /* HarnessErrorView.swift in Sources */ = {isa = PBXBuildFile; fileRef = B0000000000000000000000B /* HarnessErrorView.swift */; };
+		A0000000000000000000000C /* MainView.swift in Sources */ = {isa = PBXBuildFile; fileRef = B0000000000000000000000C /* MainView.swift */; };
+		A0000000000000000000000D /* SettingsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = B0000000000000000000000D /* SettingsView.swift */; };
+		A0000000000000000000000E /* StartingView.swift in Sources */ = {isa = PBXBuildFile; fileRef = B0000000000000000000000E /* StartingView.swift */; };
+		A0000000000000000000000F /* LogManager.swift in Sources */ = {isa = PBXBuildFile; fileRef = B0000000000000000000000F /* LogManager.swift */; };
+		A00000000000000000000010 /* PathUtils.swift in Sources */ = {isa = PBXBuildFile; fileRef = B00000000000000000000010 /* PathUtils.swift */; };
+		A00000000000000000000011 /* PortScanner.swift in Sources */ = {isa = PBXBuildFile; fileRef = B00000000000000000000011 /* PortScanner.swift */; };
+		A00000000000000000000012 /* ProcessUtils.swift in Sources */ = {isa = PBXBuildFile; fileRef = B00000000000000000000012 /* ProcessUtils.swift */; };
+		A00000000000000000000013 /* DeepSeekHarnessDeskTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = B00000000000000000000013 /* DeepSeekHarnessDeskTests.swift */; };
+/* End PBXBuildFile section */
+
+/* Begin PBXFileReference section */
+		B00000000000000000000001 /* DeepSeekHarnessDeskApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DeepSeekHarnessDeskApp.swift; sourceTree = "<group>"; };
+		B00000000000000000000002 /* AppDelegate.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppDelegate.swift; sourceTree = "<group>"; };
+		B00000000000000000000003 /* AppState.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppState.swift; sourceTree = "<group>"; };
+		B00000000000000000000004 /* CrashRecoveryPolicy.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CrashRecoveryPolicy.swift; sourceTree = "<group>"; };
+		B00000000000000000000005 /* HarnessHealthMonitor.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HarnessHealthMonitor.swift; sourceTree = "<group>"; };
+		B00000000000000000000006 /* HarnessManager.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HarnessManager.swift; sourceTree = "<group>"; };
+		B00000000000000000000007 /* HarnessState.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HarnessState.swift; sourceTree = "<group>"; };
+		B00000000000000000000008 /* RuntimeManager.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RuntimeManager.swift; sourceTree = "<group>"; };
+		B00000000000000000000009 /* HarnessWebView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HarnessWebView.swift; sourceTree = "<group>"; };
+		B0000000000000000000000A /* WebViewController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WebViewController.swift; sourceTree = "<group>"; };
+		B0000000000000000000000B /* HarnessErrorView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HarnessErrorView.swift; sourceTree = "<group>"; };
+		B0000000000000000000000C /* MainView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MainView.swift; sourceTree = "<group>"; };
+		B0000000000000000000000D /* SettingsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SettingsView.swift; sourceTree = "<group>"; };
+		B0000000000000000000000E /* StartingView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = StartingView.swift; sourceTree = "<group>"; };
+		B0000000000000000000000F /* LogManager.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LogManager.swift; sourceTree = "<group>"; };
+		B00000000000000000000010 /* PathUtils.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PathUtils.swift; sourceTree = "<group>"; };
+		B00000000000000000000011 /* PortScanner.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PortScanner.swift; sourceTree = "<group>"; };
+		B00000000000000000000012 /* ProcessUtils.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ProcessUtils.swift; sourceTree = "<group>"; };
+		B00000000000000000000013 /* DeepSeekHarnessDeskTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DeepSeekHarnessDeskTests.swift; sourceTree = "<group>"; };
+		C00000000000000000000001 /* DeepSeek Harness Desk.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = "DeepSeek Harness Desk.app"; sourceTree = BUILT_PRODUCTS_DIR; };
+		C00000000000000000000002 /* DeepSeekHarnessDeskTests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = DeepSeekHarnessDeskTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
+/* End PBXFileReference section */
+
+/* Begin PBXFrameworksBuildPhase section */
+		D00000000000000000000001 /* Frameworks */ = {
+			isa = PBXFrameworksBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		D00000000000000000000002 /* Tests Frameworks */ = {
+			isa = PBXFrameworksBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXFrameworksBuildPhase section */
+
+/* Begin PBXGroup section */
+		E00000000000000000000001 = {
+			isa = PBXGroup;
+			children = (
+				E00000000000000000000002 /* App */,
+				E00000000000000000000003 /* Harness */,
+				E00000000000000000000004 /* Runtime */,
+				E00000000000000000000005 /* Web */,
+				E00000000000000000000006 /* Views */,
+				E00000000000000000000007 /* Utilities */,
+				E00000000000000000000008 /* Logging */,
+				E0000000000000000000000A /* Tests */,
+				B00000000000000000000001 /* DeepSeekHarnessDeskApp.swift */,
+				E00000000000000000000009 /* Products */,
+			);
+			sourceTree = "<group>";
+		};
+		E00000000000000000000002 /* App */ = {isa = PBXGroup; children = (B00000000000000000000002, B00000000000000000000003,); path = App; sourceTree = "<group>"; };
+		E00000000000000000000003 /* Harness */ = {isa = PBXGroup; children = (B00000000000000000000004, B00000000000000000000005, B00000000000000000000006, B00000000000000000000007,); path = Harness; sourceTree = "<group>"; };
+		E00000000000000000000004 /* Runtime */ = {isa = PBXGroup; children = (B00000000000000000000008,); path = Runtime; sourceTree = "<group>"; };
+		E00000000000000000000005 /* Web */ = {isa = PBXGroup; children = (B00000000000000000000009, B0000000000000000000000A,); path = Web; sourceTree = "<group>"; };
+		E00000000000000000000006 /* Views */ = {isa = PBXGroup; children = (B0000000000000000000000B, B0000000000000000000000C, B0000000000000000000000D, B0000000000000000000000E,); path = Views; sourceTree = "<group>"; };
+		E00000000000000000000007 /* Utilities */ = {isa = PBXGroup; children = (B00000000000000000000010, B00000000000000000000011, B00000000000000000000012,); path = Utilities; sourceTree = "<group>"; };
+		E00000000000000000000008 /* Logging */ = {isa = PBXGroup; children = (B0000000000000000000000F,); path = Logging; sourceTree = "<group>"; };
+		E00000000000000000000009 /* Products */ = {isa = PBXGroup; children = (C00000000000000000000001, C00000000000000000000002,); name = Products; sourceTree = "<group>"; };
+		E0000000000000000000000A /* Tests */ = {isa = PBXGroup; children = (B00000000000000000000013,); path = Tests; sourceTree = "<group>"; };
+/* End PBXGroup section */
+
+/* Begin PBXNativeTarget section */
+		F00000000000000000000001 /* DeepSeekHarnessDesk */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = F00000000000000000000004 /* Build configuration list for PBXNativeTarget "DeepSeekHarnessDesk" */;
+			buildPhases = (
+				F00000000000000000000002 /* Sources */,
+				D00000000000000000000001 /* Frameworks */,
+				F00000000000000000000003 /* Resources */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+			);
+			name = DeepSeekHarnessDesk;
+			productName = DeepSeekHarnessDesk;
+			productReference = C00000000000000000000001 /* DeepSeek Harness Desk.app */;
+			productType = "com.apple.product-type.application";
+		};
+		F00000000000000000000006 /* DeepSeekHarnessDeskTests */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = F00000000000000000000009 /* Build configuration list for PBXNativeTarget "DeepSeekHarnessDeskTests" */;
+			buildPhases = (
+				F00000000000000000000007 /* Tests Sources */,
+				D00000000000000000000002 /* Tests Frameworks */,
+				F00000000000000000000008 /* Tests Resources */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+				F0000000000000000000000A /* TargetDependency */,
+			);
+			name = DeepSeekHarnessDeskTests;
+			productName = DeepSeekHarnessDeskTests;
+			productReference = C00000000000000000000002 /* DeepSeekHarnessDeskTests.xctest */;
+			productType = "com.apple.product-type.bundle.unit-test";
+		};
+/* End PBXNativeTarget section */
+
+/* Begin PBXProject section */
+		100000000000000000000001 /* Project object */ = {
+			isa = PBXProject;
+			attributes = {
+				BuildIndependentTargetsInParallel = 1;
+				LastSwiftUpdateCheck = 2600;
+				LastUpgradeCheck = 2600;
+			};
+			buildConfigurationList = F00000000000000000000005 /* Build configuration list for PBXProject "DeepSeekHarnessDesk" */;
+			compatibilityVersion = "Xcode 16.0";
+			developmentRegion = en;
+			hasScannedForEncodings = 0;
+			knownRegions = (
+				en,
+				Base,
+			);
+			mainGroup = E00000000000000000000001;
+			productRefGroup = E00000000000000000000009 /* Products */;
+			projectDirPath = "";
+			projectRoot = "";
+				targets = (
+				F00000000000000000000001 /* DeepSeekHarnessDesk */,
+				F00000000000000000000006 /* DeepSeekHarnessDeskTests */,
+			);
+		};
+/* End PBXProject section */
+
+/* Begin PBXResourcesBuildPhase section */
+		F00000000000000000000003 /* Resources */ = {
+			isa = PBXResourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		F00000000000000000000008 /* Tests Resources */ = {
+			isa = PBXResourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXResourcesBuildPhase section */
+
+/* Begin PBXSourcesBuildPhase section */
+		F00000000000000000000002 /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				A00000000000000000000001 /* DeepSeekHarnessDeskApp.swift in Sources */,
+				A00000000000000000000002 /* AppDelegate.swift in Sources */,
+				A00000000000000000000003 /* AppState.swift in Sources */,
+				A00000000000000000000004 /* CrashRecoveryPolicy.swift in Sources */,
+				A00000000000000000000005 /* HarnessHealthMonitor.swift in Sources */,
+				A00000000000000000000006 /* HarnessManager.swift in Sources */,
+				A00000000000000000000007 /* HarnessState.swift in Sources */,
+				A00000000000000000000008 /* RuntimeManager.swift in Sources */,
+				A00000000000000000000009 /* HarnessWebView.swift in Sources */,
+				A0000000000000000000000A /* WebViewController.swift in Sources */,
+				A0000000000000000000000B /* HarnessErrorView.swift in Sources */,
+				A0000000000000000000000C /* MainView.swift in Sources */,
+				A0000000000000000000000D /* SettingsView.swift in Sources */,
+				A0000000000000000000000E /* StartingView.swift in Sources */,
+				A0000000000000000000000F /* LogManager.swift in Sources */,
+				A00000000000000000000010 /* PathUtils.swift in Sources */,
+				A00000000000000000000011 /* PortScanner.swift in Sources */,
+				A00000000000000000000012 /* ProcessUtils.swift in Sources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		F00000000000000000000007 /* Tests Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				A00000000000000000000013 /* DeepSeekHarnessDeskTests.swift in Sources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXSourcesBuildPhase section */
+
+/* Begin PBXContainerItemProxy section */
+		F0000000000000000000000B /* ContainerItemProxy */ = {
+			isa = PBXContainerItemProxy;
+			containerPortal = 100000000000000000000001 /* Project object */;
+			proxyType = 1;
+			remoteGlobalIDString = F00000000000000000000001;
+			remoteInfo = DeepSeekHarnessDesk;
+		};
+/* End PBXContainerItemProxy section */
+
+/* Begin PBXTargetDependency section */
+		F0000000000000000000000A /* TargetDependency */ = {
+			isa = PBXTargetDependency;
+			target = F00000000000000000000001 /* DeepSeekHarnessDesk */;
+			targetProxy = F0000000000000000000000B /* ContainerItemProxy */;
+		};
+/* End PBXTargetDependency section */
+
+/* Begin XCBuildConfiguration section */
+		F10000000000000000000001 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ALWAYS_SEARCH_USER_PATHS = NO;
+				CLANG_ENABLE_MODULES = YES;
+				CLANG_ENABLE_OBJC_ARC = YES;
+				MACOSX_DEPLOYMENT_TARGET = 14.0;
+				SDKROOT = macosx;
+				SWIFT_VERSION = 5.0;
+			};
+			name = Debug;
+		};
+		F10000000000000000000002 /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ALWAYS_SEARCH_USER_PATHS = NO;
+				CLANG_ENABLE_MODULES = YES;
+				CLANG_ENABLE_OBJC_ARC = YES;
+				MACOSX_DEPLOYMENT_TARGET = 14.0;
+				SDKROOT = macosx;
+				SWIFT_VERSION = 5.0;
+			};
+			name = Release;
+		};
+		F10000000000000000000003 /* Target Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
+				CLANG_ENABLE_MODULES = YES;
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 1;
+				ENABLE_TESTABILITY = YES;
+				ENABLE_PREVIEWS = YES;
+				GENERATE_INFOPLIST_FILE = YES;
+				INFOPLIST_KEY_CFBundleDisplayName = "DeepSeek Harness Desk";
+				INFOPLIST_KEY_LSApplicationCategoryType = "public.app-category.developer-tools";
+				INFOPLIST_KEY_NSHighResolutionCapable = YES;
+				MARKETING_VERSION = 0.1.0;
+				MACOSX_DEPLOYMENT_TARGET = 14.0;
+				PRODUCT_BUNDLE_IDENTIFIER = "com.deepseek-harness-desk.app";
+				PRODUCT_NAME = "DeepSeek Harness Desk";
+				SWIFT_OPTIMIZATION_LEVEL = "-Onone";
+				SWIFT_VERSION = 5.0;
+				SUPPORTED_PLATFORMS = macosx;
+			};
+			name = Debug;
+		};
+		F10000000000000000000004 /* Target Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
+				CLANG_ENABLE_MODULES = YES;
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 1;
+				ENABLE_PREVIEWS = NO;
+				GENERATE_INFOPLIST_FILE = YES;
+				INFOPLIST_KEY_CFBundleDisplayName = "DeepSeek Harness Desk";
+				INFOPLIST_KEY_LSApplicationCategoryType = "public.app-category.developer-tools";
+				INFOPLIST_KEY_NSHighResolutionCapable = YES;
+				MARKETING_VERSION = 0.1.0;
+				MACOSX_DEPLOYMENT_TARGET = 14.0;
+				PRODUCT_BUNDLE_IDENTIFIER = "com.deepseek-harness-desk.app";
+				PRODUCT_NAME = "DeepSeek Harness Desk";
+				SWIFT_OPTIMIZATION_LEVEL = "-O";
+				SWIFT_VERSION = 5.0;
+				SUPPORTED_PLATFORMS = macosx;
+			};
+			name = Release;
+		};
+		F10000000000000000000005 /* Tests Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				BUNDLE_LOADER = "$(TEST_HOST)";
+				CLANG_ENABLE_MODULES = YES;
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 1;
+				GENERATE_INFOPLIST_FILE = YES;
+				MACOSX_DEPLOYMENT_TARGET = 14.0;
+				PRODUCT_BUNDLE_IDENTIFIER = "com.deepseek-harness-desk.tests";
+				PRODUCT_NAME = DeepSeekHarnessDeskTests;
+				SWIFT_VERSION = 5.0;
+				SUPPORTED_PLATFORMS = macosx;
+				TEST_HOST = "$(BUILT_PRODUCTS_DIR)/DeepSeek Harness Desk.app/Contents/MacOS/DeepSeek Harness Desk";
+			};
+			name = Debug;
+		};
+		F10000000000000000000006 /* Tests Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				BUNDLE_LOADER = "$(TEST_HOST)";
+				CLANG_ENABLE_MODULES = YES;
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 1;
+				GENERATE_INFOPLIST_FILE = YES;
+				MACOSX_DEPLOYMENT_TARGET = 14.0;
+				PRODUCT_BUNDLE_IDENTIFIER = "com.deepseek-harness-desk.tests";
+				PRODUCT_NAME = DeepSeekHarnessDeskTests;
+				SWIFT_OPTIMIZATION_LEVEL = "-O";
+				SWIFT_VERSION = 5.0;
+				SUPPORTED_PLATFORMS = macosx;
+				TEST_HOST = "$(BUILT_PRODUCTS_DIR)/DeepSeek Harness Desk.app/Contents/MacOS/DeepSeek Harness Desk";
+			};
+			name = Release;
+		};
+/* End XCBuildConfiguration section */
+
+/* Begin XCConfigurationList section */
+		F00000000000000000000004 /* Build configuration list for PBXNativeTarget "DeepSeekHarnessDesk" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				F10000000000000000000003 /* Target Debug */,
+				F10000000000000000000004 /* Target Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
+		F00000000000000000000005 /* Build configuration list for PBXProject "DeepSeekHarnessDesk" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				F10000000000000000000001 /* Debug */,
+				F10000000000000000000002 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
+		F00000000000000000000009 /* Build configuration list for PBXNativeTarget "DeepSeekHarnessDeskTests" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				F10000000000000000000005 /* Tests Debug */,
+				F10000000000000000000006 /* Tests Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
+/* End XCConfigurationList section */
+	};
+	rootObject = 100000000000000000000001 /* Project object */;
+}
