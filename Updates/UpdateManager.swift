@@ -42,7 +42,7 @@ final class UpdateManager: ObservableObject {
     }
 
     static let releasesURL = URL(string: "https://api.github.com/repos/misswell/deepseek-harness-desk/releases/latest")!
-    static let currentVersion = Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "0.2.2"
+    static let currentVersion = Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "0.2.3"
 
     @Published private(set) var isChecking = false
     @Published private(set) var isInstalling = false

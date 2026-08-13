@@ -8,16 +8,21 @@ final class WebViewController: NSObject, ObservableObject {
     private var pendingURL: URL?
 
     func attach(_ webView: WKWebView) {
-        guard self.webView !== webView else { return }
-        self.webView = webView
-        if let pendingURL {
-            webView.load(URLRequest(url: pendingURL))
+        if self.webView !== webView {
+            self.webView = webView
         }
+        loadPendingURLIfNeeded()
     }
 
     func load(_ url: URL) {
         pendingURL = url
         webView?.load(URLRequest(url: url))
+    }
+
+    func restore(url: URL?, forceReload: Bool = false) {
+        guard let url else { return }
+        pendingURL = url
+        loadPendingURLIfNeeded(forceReload: forceReload)
     }
 
     func reload() {
@@ -30,5 +35,33 @@ final class WebViewController: NSObject, ObservableObject {
 
     func goForward() {
         webView?.goForward()
+    }
+
+    private func loadPendingURLIfNeeded(forceReload: Bool = false) {
+        guard let webView, let pendingURL else { return }
+
+        if forceReload {
+            webView.stopLoading()
+            if let currentURL = webView.url,
+               currentURL.scheme == pendingURL.scheme,
+               currentURL.host == pendingURL.host,
+               currentURL.port == pendingURL.port {
+                webView.reload()
+            } else {
+                webView.load(URLRequest(url: pendingURL))
+            }
+            return
+        }
+
+        guard !webView.isLoading else { return }
+
+        if let currentURL = webView.url,
+           currentURL.scheme == pendingURL.scheme,
+           currentURL.host == pendingURL.host,
+           currentURL.port == pendingURL.port {
+            return
+        }
+
+        webView.load(URLRequest(url: pendingURL))
     }
 }

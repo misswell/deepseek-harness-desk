@@ -11,12 +11,13 @@ struct MainView: View {
                 if let serverURL = harnessManager.serverURL {
                     HarnessWebView(
                         controller: webViewController,
+                        url: serverURL,
                         localHost: serverURL.host ?? "127.0.0.1",
                         allowsDeveloperTools: false
                     )
                     .id(serverURL)
                     .task(id: serverURL) {
-                        webViewController.load(serverURL)
+                        webViewController.restore(url: serverURL)
                     }
                 } else {
                     StartingView()

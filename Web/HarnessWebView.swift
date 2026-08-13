@@ -4,6 +4,7 @@ import WebKit
 
 struct HarnessWebView: NSViewRepresentable {
     let controller: WebViewController
+    let url: URL
     let localHost: String
     let allowsDeveloperTools: Bool
 
@@ -27,11 +28,13 @@ struct HarnessWebView: NSViewRepresentable {
         }
 
         controller.attach(webView)
+        controller.restore(url: url)
         return webView
     }
 
     func updateNSView(_ webView: WKWebView, context: Context) {
         controller.attach(webView)
+        controller.restore(url: url)
     }
 
     final class Coordinator: NSObject, WKNavigationDelegate, WKUIDelegate {

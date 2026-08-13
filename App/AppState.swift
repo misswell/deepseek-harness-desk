@@ -38,6 +38,13 @@ final class AppState: ObservableObject {
         runtimeManager.startUpdateChecks()
     }
 
+    func restoreWindowContent(forceReload: Bool = false) {
+        webViewController.restore(
+            url: harnessManager.serverURL,
+            forceReload: forceReload
+        )
+    }
+
     func openLogs() {
         NSWorkspace.shared.open(logManager.logsDirectory)
     }

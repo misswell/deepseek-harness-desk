@@ -4,6 +4,7 @@ import SwiftUI
 struct DeepSeekHarnessDeskApp: App {
     @NSApplicationDelegateAdaptor(AppDelegate.self) private var appDelegate
     @StateObject private var appState = AppState()
+    @Environment(\.scenePhase) private var scenePhase
 
     var body: some Scene {
         WindowGroup {
@@ -14,7 +15,16 @@ struct DeepSeekHarnessDeskApp: App {
                 .environmentObject(appState.webViewController)
                 .environmentObject(appState.updateManager)
                 .onAppear {
-                    appDelegate.register(harnessManager: appState.harnessManager)
+                    appDelegate.register(
+                        harnessManager: appState.harnessManager,
+                        webViewController: appState.webViewController
+                    )
+                    appState.restoreWindowContent()
+                }
+                .onChange(of: scenePhase) { _, newPhase in
+                    if newPhase == .active {
+                        appState.restoreWindowContent()
+                    }
                 }
                 .task {
                     await appState.startIfNeeded()
@@ -86,7 +96,7 @@ struct DeepSeekHarnessDeskApp: App {
                 .environmentObject(appState.harnessManager)
                 .environmentObject(appState.runtimeManager)
                 .environmentObject(appState.updateManager)
-                .background(WindowChromeConfigurator())
+                .background(WindowChromeConfigurator(isMainWindow: false))
         }
         .windowStyle(.hiddenTitleBar)
     }
