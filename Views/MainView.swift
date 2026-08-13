@@ -27,6 +27,10 @@ struct MainView: View {
                 HarnessErrorView()
             case .stopped:
                 VStack(spacing: 14) {
+                    Image(nsImage: NSApplication.shared.applicationIconImage)
+                        .resizable()
+                        .aspectRatio(contentMode: .fit)
+                        .frame(width: 88, height: 88)
                     Text("DeepSeek Harness Desk")
                         .font(.title2)
                     Button("启动 Harness") {

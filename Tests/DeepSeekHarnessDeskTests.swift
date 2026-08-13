@@ -41,6 +41,13 @@ final class DeepSeekHarnessDeskTests: XCTestCase {
         XCTAssertNil(PortScanner.firstAvailable(startingAt: 3099, endingAt: 3080))
     }
 
+    func testUpdateManagerComparesVersionsNumerically() {
+        XCTAssertTrue(UpdateManager.isNewer("0.2.0", than: "0.1.0"))
+        XCTAssertTrue(UpdateManager.isNewer("1.0.0", than: "0.99.9"))
+        XCTAssertFalse(UpdateManager.isNewer("0.2.0", than: "0.2"))
+        XCTAssertFalse(UpdateManager.isNewer("v0.2.0", than: "0.2.0"))
+    }
+
     func testLogManagerRedactsSecrets() throws {
         let temporaryDirectory = FileManager.default.temporaryDirectory
             .appendingPathComponent(UUID().uuidString, isDirectory: true)

@@ -7,6 +7,7 @@ final class AppState: ObservableObject {
     let runtimeManager: RuntimeManager
     let harnessManager: HarnessManager
     let webViewController: WebViewController
+    let updateManager: UpdateManager
 
     private var hasStarted = false
 
@@ -20,11 +21,13 @@ final class AppState: ObservableObject {
             logger: logManager
         )
         self.webViewController = WebViewController()
+        self.updateManager = UpdateManager()
     }
 
     func startIfNeeded() async {
         guard !hasStarted else { return }
         hasStarted = true
+        updateManager.start()
         await harnessManager.start()
     }
 

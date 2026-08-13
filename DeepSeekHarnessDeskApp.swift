@@ -10,7 +10,9 @@ struct DeepSeekHarnessDeskApp: App {
             MainView()
                 .environmentObject(appState)
                 .environmentObject(appState.harnessManager)
+                .environmentObject(appState.runtimeManager)
                 .environmentObject(appState.webViewController)
+                .environmentObject(appState.updateManager)
                 .onAppear {
                     appDelegate.register(harnessManager: appState.harnessManager)
                 }
@@ -58,12 +60,21 @@ struct DeepSeekHarnessDeskApp: App {
                     appState.openLogs()
                 }
             }
+
+            CommandMenu("帮助") {
+                Button("检查更新…") {
+                    Task { await appState.updateManager.checkForUpdates() }
+                }
+                .disabled(appState.updateManager.isChecking || appState.updateManager.isInstalling)
+            }
         }
 
         Settings {
             SettingsView()
                 .environmentObject(appState)
                 .environmentObject(appState.harnessManager)
+                .environmentObject(appState.runtimeManager)
+                .environmentObject(appState.updateManager)
         }
     }
 }

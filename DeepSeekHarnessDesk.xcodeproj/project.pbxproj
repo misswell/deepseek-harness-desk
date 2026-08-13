@@ -26,6 +26,9 @@
 		A00000000000000000000011 /* PortScanner.swift in Sources */ = {isa = PBXBuildFile; fileRef = B00000000000000000000011 /* PortScanner.swift */; };
 		A00000000000000000000012 /* ProcessUtils.swift in Sources */ = {isa = PBXBuildFile; fileRef = B00000000000000000000012 /* ProcessUtils.swift */; };
 		A00000000000000000000013 /* DeepSeekHarnessDeskTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = B00000000000000000000013 /* DeepSeekHarnessDeskTests.swift */; };
+		A00000000000000000000014 /* ProcessRunner.swift in Sources */ = {isa = PBXBuildFile; fileRef = B00000000000000000000014 /* ProcessRunner.swift */; };
+		A00000000000000000000015 /* UpdateManager.swift in Sources */ = {isa = PBXBuildFile; fileRef = B00000000000000000000015 /* UpdateManager.swift */; };
+		A00000000000000000000016 /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = B00000000000000000000016 /* Assets.xcassets */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXFileReference section */
@@ -48,6 +51,9 @@
 		B00000000000000000000011 /* PortScanner.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PortScanner.swift; sourceTree = "<group>"; };
 		B00000000000000000000012 /* ProcessUtils.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ProcessUtils.swift; sourceTree = "<group>"; };
 		B00000000000000000000013 /* DeepSeekHarnessDeskTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DeepSeekHarnessDeskTests.swift; sourceTree = "<group>"; };
+		B00000000000000000000014 /* ProcessRunner.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ProcessRunner.swift; sourceTree = "<group>"; };
+		B00000000000000000000015 /* UpdateManager.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = UpdateManager.swift; sourceTree = "<group>"; };
+		B00000000000000000000016 /* Assets.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = Assets.xcassets; sourceTree = "<group>"; };
 		C00000000000000000000001 /* DeepSeek Harness Desk.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = "DeepSeek Harness Desk.app"; sourceTree = BUILT_PRODUCTS_DIR; };
 		C00000000000000000000002 /* DeepSeekHarnessDeskTests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = DeepSeekHarnessDeskTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
 /* End PBXFileReference section */
@@ -80,6 +86,8 @@
 				E00000000000000000000006 /* Views */,
 				E00000000000000000000007 /* Utilities */,
 				E00000000000000000000008 /* Logging */,
+				E0000000000000000000000B /* Updates */,
+				B00000000000000000000016 /* Assets.xcassets */,
 				E0000000000000000000000A /* Tests */,
 				B00000000000000000000001 /* DeepSeekHarnessDeskApp.swift */,
 				E00000000000000000000009 /* Products */,
@@ -91,10 +99,11 @@
 		E00000000000000000000004 /* Runtime */ = {isa = PBXGroup; children = (B00000000000000000000008,); path = Runtime; sourceTree = "<group>"; };
 		E00000000000000000000005 /* Web */ = {isa = PBXGroup; children = (B00000000000000000000009, B0000000000000000000000A,); path = Web; sourceTree = "<group>"; };
 		E00000000000000000000006 /* Views */ = {isa = PBXGroup; children = (B0000000000000000000000B, B0000000000000000000000C, B0000000000000000000000D, B0000000000000000000000E,); path = Views; sourceTree = "<group>"; };
-		E00000000000000000000007 /* Utilities */ = {isa = PBXGroup; children = (B00000000000000000000010, B00000000000000000000011, B00000000000000000000012,); path = Utilities; sourceTree = "<group>"; };
+		E00000000000000000000007 /* Utilities */ = {isa = PBXGroup; children = (B00000000000000000000010, B00000000000000000000011, B00000000000000000000012, B00000000000000000000014,); path = Utilities; sourceTree = "<group>"; };
 		E00000000000000000000008 /* Logging */ = {isa = PBXGroup; children = (B0000000000000000000000F,); path = Logging; sourceTree = "<group>"; };
 		E00000000000000000000009 /* Products */ = {isa = PBXGroup; children = (C00000000000000000000001, C00000000000000000000002,); name = Products; sourceTree = "<group>"; };
 		E0000000000000000000000A /* Tests */ = {isa = PBXGroup; children = (B00000000000000000000013,); path = Tests; sourceTree = "<group>"; };
+		E0000000000000000000000B /* Updates */ = {isa = PBXGroup; children = (B00000000000000000000015,); path = Updates; sourceTree = "<group>"; };
 /* End PBXGroup section */
 
 /* Begin PBXNativeTarget section */
@@ -167,6 +176,7 @@
 			isa = PBXResourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				A00000000000000000000016 /* Assets.xcassets in Resources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -202,6 +212,8 @@
 				A00000000000000000000010 /* PathUtils.swift in Sources */,
 				A00000000000000000000011 /* PortScanner.swift in Sources */,
 				A00000000000000000000012 /* ProcessUtils.swift in Sources */,
+				A00000000000000000000014 /* ProcessRunner.swift in Sources */,
+				A00000000000000000000015 /* UpdateManager.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -271,7 +283,7 @@
 				INFOPLIST_KEY_CFBundleDisplayName = "DeepSeek Harness Desk";
 				INFOPLIST_KEY_LSApplicationCategoryType = "public.app-category.developer-tools";
 				INFOPLIST_KEY_NSHighResolutionCapable = YES;
-				MARKETING_VERSION = 0.1.0;
+				MARKETING_VERSION = 0.2.0;
 				MACOSX_DEPLOYMENT_TARGET = 14.0;
 				PRODUCT_BUNDLE_IDENTIFIER = "com.deepseek-harness-desk.app";
 				PRODUCT_NAME = "DeepSeek Harness Desk";
@@ -293,7 +305,7 @@
 				INFOPLIST_KEY_CFBundleDisplayName = "DeepSeek Harness Desk";
 				INFOPLIST_KEY_LSApplicationCategoryType = "public.app-category.developer-tools";
 				INFOPLIST_KEY_NSHighResolutionCapable = YES;
-				MARKETING_VERSION = 0.1.0;
+				MARKETING_VERSION = 0.2.0;
 				MACOSX_DEPLOYMENT_TARGET = 14.0;
 				PRODUCT_BUNDLE_IDENTIFIER = "com.deepseek-harness-desk.app";
 				PRODUCT_NAME = "DeepSeek Harness Desk";

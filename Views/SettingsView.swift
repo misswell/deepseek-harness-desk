@@ -26,11 +26,23 @@ struct SettingsView: View {
 private struct GeneralSettingsView: View {
     @AppStorage("launchAtLogin") private var launchAtLogin = false
     @AppStorage("restoreLastWindow") private var restoreLastWindow = true
+    @EnvironmentObject private var updateManager: UpdateManager
 
     var body: some View {
         Form {
             Toggle("登录时启动", isOn: $launchAtLogin)
             Toggle("恢复上次窗口", isOn: $restoreLastWindow)
+            Toggle(
+                "自动检查更新",
+                isOn: Binding(
+                    get: { updateManager.automaticallyChecksForUpdates },
+                    set: { updateManager.setAutomaticChecks($0) }
+                )
+            )
+            Button("立即检查更新…") {
+                Task { await updateManager.checkForUpdates() }
+            }
+            .disabled(updateManager.isChecking || updateManager.isInstalling)
         }
         .formStyle(.grouped)
     }
@@ -84,8 +96,10 @@ private struct AdvancedSettingsView: View {
 private struct AboutSettingsView: View {
     var body: some View {
         VStack(spacing: 10) {
-            Image(systemName: "macwindow.on.rectangle")
-                .font(.system(size: 38))
+            Image(nsImage: NSApplication.shared.applicationIconImage)
+                .resizable()
+                .aspectRatio(contentMode: .fit)
+                .frame(width: 72, height: 72)
             Text("DeepSeek Harness Desk")
                 .font(.title2)
                 .bold()

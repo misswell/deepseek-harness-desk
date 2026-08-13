@@ -59,7 +59,7 @@ final class HarnessManager: ObservableObject {
         runtimeManager.refresh()
 
         guard let executableURL = runtimeManager.dshExecutableURL else {
-            fail(with: "找不到 dsh。MVP 开发版要求先在 PATH 中安装 DeepSeek Harness。")
+            fail(with: "尚未安装 DeepSeek Harness 运行时。请点击“一键安装运行时”完成安装。")
             return
         }
 
@@ -77,7 +77,7 @@ final class HarnessManager: ObservableObject {
         candidate.executableURL = executableURL
         candidate.arguments = ["web", "--port", String(selectedPort)]
         candidate.currentDirectoryURL = FileManager.default.homeDirectoryForCurrentUser
-        candidate.environment = ProcessInfo.processInfo.environment
+        candidate.environment = runtimeManager.processEnvironment()
         candidate.standardOutput = outputPipe
         candidate.standardError = errorPipe
 
@@ -108,7 +108,9 @@ final class HarnessManager: ObservableObject {
         stderrPipe = errorPipe
         port = selectedPort
         serverURL = URL(string: "http://127.0.0.1:\(selectedPort)")
-        runtimeVersion = "PATH · \(executableURL.lastPathComponent)"
+        runtimeVersion = runtimeManager.isUsingManagedRuntime
+            ? "Managed Runtime · \(RuntimeManager.harnessVersion)"
+            : "系统 PATH · \(executableURL.lastPathComponent)"
         lastExitCode = nil
 
         logger.append(
