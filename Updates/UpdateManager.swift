@@ -7,10 +7,12 @@ final class UpdateManager: ObservableObject {
     struct ReleaseAsset: Decodable {
         let name: String
         let browserDownloadURL: URL
+        let digest: String?
 
         enum CodingKeys: String, CodingKey {
             case name
             case browserDownloadURL = "browser_download_url"
+            case digest
         }
     }
 
@@ -42,7 +44,10 @@ final class UpdateManager: ObservableObject {
     }
 
     static let releasesURL = URL(string: "https://api.github.com/repos/misswell/deepseek-harness-desk/releases/latest")!
-    static let currentVersion = Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "0.2.3"
+    static let currentVersion = Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "0.2.4"
+
+    private static let metadataRequestTimeout: TimeInterval = 20
+    private static let archiveDownloadTimeout: TimeInterval = 120
 
     @Published private(set) var isChecking = false
     @Published private(set) var isInstalling = false
@@ -53,10 +58,17 @@ final class UpdateManager: ObservableObject {
     @Published private(set) var availableRelease: Release?
 
     private let fileManager = FileManager.default
+    private let updateSession: URLSession
     private var hasStarted = false
     private var automaticCheckTask: Task<Void, Never>?
 
     init() {
+        let sessionConfiguration = URLSessionConfiguration.ephemeral
+        sessionConfiguration.waitsForConnectivity = false
+        sessionConfiguration.timeoutIntervalForRequest = Self.metadataRequestTimeout
+        sessionConfiguration.timeoutIntervalForResource = Self.archiveDownloadTimeout
+        self.updateSession = URLSession(configuration: sessionConfiguration)
+
         if UserDefaults.standard.object(forKey: "autoCheckForUpdates") == nil {
             UserDefaults.standard.set(true, forKey: "autoCheckForUpdates")
         }
@@ -69,6 +81,7 @@ final class UpdateManager: ObservableObject {
 
     deinit {
         automaticCheckTask?.cancel()
+        updateSession.invalidateAndCancel()
     }
 
     func start() {
@@ -114,10 +127,14 @@ final class UpdateManager: ObservableObject {
         defer { isChecking = false }
 
         do {
-            var request = URLRequest(url: Self.releasesURL)
+            var request = URLRequest(
+                url: Self.releasesURL,
+                cachePolicy: .reloadIgnoringLocalCacheData,
+                timeoutInterval: Self.metadataRequestTimeout
+            )
             request.setValue("DeepSeek Harness Desk/\(Self.currentVersion)", forHTTPHeaderField: "User-Agent")
             request.setValue("application/vnd.github+json", forHTTPHeaderField: "Accept")
-            let (data, response) = try await URLSession.shared.data(for: request)
+            let (data, response) = try await updateSession.data(for: request)
             if let httpResponse = response as? HTTPURLResponse,
                !(200..<300).contains(httpResponse.statusCode) {
                 throw UpdateError.server("GitHub 返回 HTTP \(httpResponse.statusCode)")
@@ -170,11 +187,11 @@ final class UpdateManager: ObservableObject {
               let asset = release.applicationArchive else { return }
 
         isInstalling = true
-        status = "正在下载 DeepSeek Harness Desk \(release.version)…"
+        status = "正在下载 DeepSeek Harness Desk \(release.version)…（最多 120 秒）"
         defer { isInstalling = false }
 
         do {
-            let (temporaryURL, response) = try await URLSession.shared.download(from: asset.browserDownloadURL)
+            let (temporaryURL, response) = try await downloadArchive(from: asset.browserDownloadURL)
             if let httpResponse = response as? HTTPURLResponse,
                !(200..<300).contains(httpResponse.statusCode) {
                 throw UpdateError.server("下载更新失败（HTTP \(httpResponse.statusCode)）")
@@ -186,8 +203,12 @@ final class UpdateManager: ObservableObject {
             let archiveURL = updateRoot.appendingPathComponent(asset.name)
             try fileManager.moveItem(at: temporaryURL, to: archiveURL)
 
+            status = "下载完成，正在校验更新包…"
+            try await validateArchive(at: archiveURL, expectedDigest: asset.digest)
+
             let extractionURL = updateRoot.appendingPathComponent("extracted", isDirectory: true)
             try fileManager.createDirectory(at: extractionURL, withIntermediateDirectories: true)
+            status = "更新包校验通过，正在解压…"
             let result = try await ProcessRunner.run(
                 executableURL: URL(fileURLWithPath: "/usr/bin/unzip"),
                 arguments: ["-q", "-o", archiveURL.path, "-d", extractionURL.path]
@@ -196,10 +217,17 @@ final class UpdateManager: ObservableObject {
                 throw UpdateError.server("解压更新失败：\(result.output.trimmingCharacters(in: .whitespacesAndNewlines))")
             }
 
-            guard let updatedApp = findApplication(in: extractionURL) else {
+            guard let updatedApp = Self.findApplication(in: extractionURL) else {
                 throw UpdateError.server("更新包中没有找到 App")
             }
-            try launchReplacementScript(currentApp: Bundle.main.bundleURL, updatedApp: updatedApp)
+            try await validateUpdatedApp(updatedApp, expectedVersion: release.version)
+
+            status = "正在安装 DeepSeek Harness Desk \(release.version)…"
+            try launchReplacementScript(
+                currentApp: Bundle.main.bundleURL,
+                updatedApp: updatedApp,
+                oldProcessID: ProcessInfo.processInfo.processIdentifier
+            )
             status = automatically ? "更新完成，App 即将重启" : "更新已准备，App 即将重启"
             availableRelease = nil
             NSApp.terminate(nil)
@@ -220,6 +248,83 @@ final class UpdateManager: ObservableObject {
                     buttons: [("好", .alertFirstButtonReturn)]
                 )
             }
+        }
+    }
+
+    private func downloadArchive(from url: URL) async throws -> (URL, URLResponse) {
+        var request = URLRequest(
+            url: url,
+            cachePolicy: .reloadIgnoringLocalCacheData,
+            timeoutInterval: Self.archiveDownloadTimeout
+        )
+        request.setValue("DeepSeek Harness Desk/\(Self.currentVersion)", forHTTPHeaderField: "User-Agent")
+        request.setValue("application/octet-stream", forHTTPHeaderField: "Accept")
+        return try await updateSession.download(for: request)
+    }
+
+    private func validateArchive(
+        at archiveURL: URL,
+        expectedDigest: String?
+    ) async throws {
+        let result = try await ProcessRunner.run(
+            executableURL: URL(fileURLWithPath: "/usr/bin/unzip"),
+            arguments: ["-tq", archiveURL.path]
+        )
+        guard result.succeeded else {
+            let details = result.output.trimmingCharacters(in: .whitespacesAndNewlines)
+            throw UpdateError.server(
+                details.isEmpty ? "更新压缩包校验失败" : "更新压缩包校验失败：\(details)"
+            )
+        }
+
+        guard let expectedDigest else { return }
+        let normalizedExpectedDigest = expectedDigest
+            .split(separator: ":", maxSplits: 1, omittingEmptySubsequences: false)
+            .last
+            .map(String.init) ?? expectedDigest
+        let digestResult = try await ProcessRunner.run(
+            executableURL: URL(fileURLWithPath: "/usr/bin/shasum"),
+            arguments: ["-a", "256", archiveURL.path]
+        )
+        guard digestResult.succeeded,
+              let actualDigest = digestResult.output
+                .split(whereSeparator: \.isWhitespace)
+                .first,
+              actualDigest.caseInsensitiveCompare(normalizedExpectedDigest) == .orderedSame else {
+            throw UpdateError.server("更新包完整性校验失败，请重新检查更新")
+        }
+    }
+
+    private func validateUpdatedApp(
+        _ updatedApp: URL,
+        expectedVersion: String
+    ) async throws {
+        let infoPlist = updatedApp.appendingPathComponent("Contents/Info.plist")
+        guard fileManager.fileExists(atPath: infoPlist.path),
+              let bundle = Bundle(url: updatedApp),
+              let updatedVersion = bundle.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String,
+              updatedVersion == expectedVersion,
+              (bundle.object(forInfoDictionaryKey: "CFBundleIdentifier") as? String) == "com.deepseek-harness-desk.app" else {
+            throw UpdateError.server("更新包中的 App 版本与 Release 不一致")
+        }
+
+        guard let executableName = bundle.object(forInfoDictionaryKey: "CFBundleExecutable") as? String else {
+            throw UpdateError.server("更新包中的 App 缺少可执行文件信息")
+        }
+        let executableURL = updatedApp.appendingPathComponent("Contents/MacOS").appendingPathComponent(executableName)
+        guard fileManager.isExecutableFile(atPath: executableURL.path) else {
+            throw UpdateError.server("更新包中的 App 可执行文件不完整")
+        }
+
+        let result = try await ProcessRunner.run(
+            executableURL: URL(fileURLWithPath: "/usr/bin/codesign"),
+            arguments: ["--verify", "--deep", "--strict", updatedApp.path]
+        )
+        guard result.succeeded else {
+            let details = result.output.trimmingCharacters(in: .whitespacesAndNewlines)
+            throw UpdateError.server(
+                details.isEmpty ? "更新包签名校验失败" : "更新包签名校验失败：\(details)"
+            )
         }
     }
 
@@ -251,7 +356,8 @@ final class UpdateManager: ObservableObject {
         _ = alert.runModal()
     }
 
-    private func findApplication(in directory: URL) -> URL? {
+    nonisolated static func findApplication(in directory: URL) -> URL? {
+        let fileManager = FileManager.default
         guard let enumerator = fileManager.enumerator(
             at: directory,
             includingPropertiesForKeys: [.isDirectoryKey],
@@ -259,24 +365,85 @@ final class UpdateManager: ObservableObject {
         ) else { return nil }
 
         for case let url as URL in enumerator where url.pathExtension == "app" {
+            let infoPlist = url.appendingPathComponent("Contents/Info.plist")
+            let executableDirectory = url.appendingPathComponent("Contents/MacOS")
+            guard fileManager.fileExists(atPath: infoPlist.path),
+                  fileManager.fileExists(atPath: executableDirectory.path) else {
+                continue
+            }
             return url
         }
         return nil
     }
 
-    private func launchReplacementScript(currentApp: URL, updatedApp: URL) throws {
+    private func launchReplacementScript(
+        currentApp: URL,
+        updatedApp: URL,
+        oldProcessID: Int32
+    ) throws {
         let scriptURL = fileManager.temporaryDirectory
             .appendingPathComponent("deepseek-harness-desk-update-\(UUID().uuidString).sh")
         let script = """
         #!/bin/sh
         set -eu
-        sleep 1
         current_app="$1"
         updated_app="$2"
-        rm -rf "$current_app"
-        mv "$updated_app" "$current_app"
-        open "$current_app"
-        rm -f "$0"
+        old_pid="$3"
+        script_path="$0"
+        backup_app="${current_app}.backup.${old_pid}.$$"
+
+        wait_count=0
+        while kill -0 "$old_pid" 2>/dev/null; do
+            if [ "$wait_count" -ge 240 ]; then
+                exit 1
+            fi
+            sleep 0.25
+            wait_count=$((wait_count + 1))
+        done
+
+        if [ ! -f "$updated_app/Contents/Info.plist" ]; then
+            exit 1
+        fi
+        if ! /usr/bin/codesign --verify --deep --strict "$updated_app" >/dev/null 2>&1; then
+            exit 1
+        fi
+
+        /bin/mv "$current_app" "$backup_app"
+        if ! /bin/mv "$updated_app" "$current_app"; then
+            /bin/mv "$backup_app" "$current_app"
+            exit 1
+        fi
+
+        if ! /usr/bin/open "$current_app"; then
+            /bin/mv "$current_app" "${current_app}.failed.${old_pid}.$$"
+            /bin/mv "$backup_app" "$current_app"
+            /usr/bin/open "$current_app" >/dev/null 2>&1 || true
+            exit 1
+        fi
+
+        new_pid=""
+        launch_count=0
+        while [ "$launch_count" -lt 40 ]; do
+            new_pid=$(/usr/bin/pgrep -x "DeepSeek Harness Desk" | /usr/bin/awk -v old_pid="$old_pid" '$1 != old_pid { print $1; exit }' || true)
+            if [ -n "$new_pid" ]; then
+                break
+            fi
+            sleep 0.5
+            launch_count=$((launch_count + 1))
+        done
+
+        if [ -z "$new_pid" ]; then
+            /bin/mv "$current_app" "${current_app}.failed.${old_pid}.$$"
+            /bin/mv "$backup_app" "$current_app"
+            /usr/bin/open "$current_app" >/dev/null 2>&1 || true
+            exit 1
+        fi
+
+        (
+            sleep 10
+            /bin/rm -rf "$backup_app"
+            /bin/rm -f "$script_path"
+        ) >/dev/null 2>&1 &
         """
         try Data(script.utf8).write(to: scriptURL, options: .atomic)
         try fileManager.setAttributes(
@@ -286,7 +453,9 @@ final class UpdateManager: ObservableObject {
 
         let process = Process()
         process.executableURL = URL(fileURLWithPath: "/bin/sh")
-        process.arguments = [scriptURL.path, currentApp.path, updatedApp.path]
+        process.arguments = [scriptURL.path, currentApp.path, updatedApp.path, String(oldProcessID)]
+        process.standardOutput = FileHandle.nullDevice
+        process.standardError = FileHandle.nullDevice
         try process.run()
     }
 

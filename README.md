@@ -2,7 +2,7 @@
 
 原生 SwiftUI macOS 桌面客户端，用于启动并承载官方 DeepSeek Harness Web UI。
 
-当前版本：0.2.3
+当前版本：0.2.4
 
 - 无需预装 Node.js 或 `dsh`：首次启动时可一键下载并安装受校验的 Managed Node.js 与 DeepSeek Harness Runtime
 - 自动选择 `3080–3099` 的本地端口
@@ -13,6 +13,7 @@
 - 使用 DeepSeek Harness 原版蓝色鲸鱼 Logo
 - 主窗口内容延伸到最上边缘，完全移除 macOS 标题栏、工具栏和窗口控制点；窗口仍可拖动、调整大小，使用 `⌘W` 关闭
 - 关闭主窗口后应用继续驻留 Dock，再次点击 Dock 图标会恢复窗口并重新加载 Harness 页面
+- 更新下载具备超时、完整性、版本和签名校验；替换失败会自动回滚，不会留下损坏的 App
 - 启动后分别检查 App 壳子和内置 `dsh`，发现新版本后默认自动安装；App 壳子会替换并重启，`dsh` 会重启 Harness 使新版本立即生效
 
 如果系统中已经安装 `dsh`，App 会优先使用它；否则在启动失败页点击“一键安装运行时”即可完成安装。Managed Runtime 安装在 `~/Library/Application Support/DeepSeek Harness Desk/runtime`，不会修改用户的 Shell 配置。

@@ -51,6 +51,38 @@ final class DeepSeekHarnessDeskTests: XCTestCase {
         XCTAssertFalse(UpdateManager.isNewer("v0.2.0", than: "0.2.0"))
     }
 
+    func testFindApplicationSkipsMetadataOnlyAppBundles() throws {
+        let temporaryDirectory = FileManager.default.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString, isDirectory: true)
+        try FileManager.default.createDirectory(
+            at: temporaryDirectory,
+            withIntermediateDirectories: true
+        )
+        defer { try? FileManager.default.removeItem(at: temporaryDirectory) }
+
+        let metadataOnlyApp = temporaryDirectory
+            .appendingPathComponent("Broken.app/Contents", isDirectory: true)
+        try FileManager.default.createDirectory(
+            at: metadataOnlyApp,
+            withIntermediateDirectories: true
+        )
+        try Data().write(to: metadataOnlyApp.appendingPathComponent("._Info.plist"))
+
+        let validApp = temporaryDirectory
+            .appendingPathComponent("Valid.app/Contents/MacOS", isDirectory: true)
+        try FileManager.default.createDirectory(
+            at: validApp,
+            withIntermediateDirectories: true
+        )
+        try Data("<?xml version=\"1.0\"?><plist version=\"1.0\"><dict/></plist>".utf8)
+            .write(to: validApp.deletingLastPathComponent().appendingPathComponent("Info.plist"))
+
+        XCTAssertEqual(
+            UpdateManager.findApplication(in: temporaryDirectory)?.lastPathComponent,
+            "Valid.app"
+        )
+    }
+
     func testLogManagerRedactsSecrets() throws {
         let temporaryDirectory = FileManager.default.temporaryDirectory
             .appendingPathComponent(UUID().uuidString, isDirectory: true)
