@@ -6,7 +6,7 @@ struct DeepSeekHarnessDeskApp: App {
     @StateObject private var appState = AppState()
 
     var body: some Scene {
-        WindowGroup("DeepSeek Harness Desk") {
+        WindowGroup {
             MainView()
                 .environmentObject(appState)
                 .environmentObject(appState.harnessManager)
@@ -19,9 +19,9 @@ struct DeepSeekHarnessDeskApp: App {
                 .task {
                     await appState.startIfNeeded()
                 }
+                .background(WindowChromeConfigurator())
         }
         .windowStyle(.hiddenTitleBar)
-        .windowToolbarStyle(.unified)
         .commands {
             CommandMenu("View") {
                 Button("Reload") {
@@ -86,6 +86,8 @@ struct DeepSeekHarnessDeskApp: App {
                 .environmentObject(appState.harnessManager)
                 .environmentObject(appState.runtimeManager)
                 .environmentObject(appState.updateManager)
+                .background(WindowChromeConfigurator())
         }
+        .windowStyle(.hiddenTitleBar)
     }
 }
