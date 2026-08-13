@@ -44,6 +44,9 @@ final class DeepSeekHarnessDeskTests: XCTestCase {
     func testUpdateManagerComparesVersionsNumerically() {
         XCTAssertTrue(UpdateManager.isNewer("0.2.0", than: "0.1.0"))
         XCTAssertTrue(UpdateManager.isNewer("1.0.0", than: "0.99.9"))
+        XCTAssertTrue(UpdateManager.isNewer("0.1.0", than: "0.1.0-rc.6"))
+        XCTAssertTrue(UpdateManager.isNewer("0.1.0-rc.10", than: "0.1.0-rc.6"))
+        XCTAssertFalse(UpdateManager.isNewer("0.1.0-rc.6", than: "0.1.0"))
         XCTAssertFalse(UpdateManager.isNewer("0.2.0", than: "0.2"))
         XCTAssertFalse(UpdateManager.isNewer("v0.2.0", than: "0.2.0"))
     }

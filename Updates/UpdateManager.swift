@@ -42,45 +42,72 @@ final class UpdateManager: ObservableObject {
     }
 
     static let releasesURL = URL(string: "https://api.github.com/repos/misswell/deepseek-harness-desk/releases/latest")!
-    static let currentVersion = Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "0.2.0"
+    static let currentVersion = Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "0.2.1"
 
     @Published private(set) var isChecking = false
     @Published private(set) var isInstalling = false
     @Published private(set) var status = ""
     @Published private(set) var automaticallyChecksForUpdates: Bool
+    @Published private(set) var automaticallyInstallsUpdates: Bool
+    @Published private(set) var latestReleaseVersion: String?
     @Published private(set) var availableRelease: Release?
 
     private let fileManager = FileManager.default
     private var hasStarted = false
+    private var automaticCheckTask: Task<Void, Never>?
 
     init() {
         if UserDefaults.standard.object(forKey: "autoCheckForUpdates") == nil {
             UserDefaults.standard.set(true, forKey: "autoCheckForUpdates")
         }
+        if UserDefaults.standard.object(forKey: "autoInstallUpdates") == nil {
+            UserDefaults.standard.set(true, forKey: "autoInstallUpdates")
+        }
         automaticallyChecksForUpdates = UserDefaults.standard.bool(forKey: "autoCheckForUpdates")
+        automaticallyInstallsUpdates = UserDefaults.standard.bool(forKey: "autoInstallUpdates")
+    }
+
+    deinit {
+        automaticCheckTask?.cancel()
     }
 
     func start() {
         guard !hasStarted else { return }
         hasStarted = true
-        guard automaticallyChecksForUpdates else { return }
+        scheduleAutomaticCheck()
+    }
 
-        Task { [weak self] in
+    private func scheduleAutomaticCheck() {
+        guard automaticallyChecksForUpdates, automaticCheckTask == nil else { return }
+
+        automaticCheckTask = Task { @MainActor [weak self] in
             try? await Task.sleep(for: .seconds(3))
-            guard !Task.isCancelled else { return }
-            await self?.checkForUpdates(interactive: false)
+            guard !Task.isCancelled, let self else { return }
+            await self.checkForUpdates(interactive: false, automaticallyInstall: true)
+            self.automaticCheckTask = nil
         }
     }
 
     func setAutomaticChecks(_ enabled: Bool) {
         automaticallyChecksForUpdates = enabled
         UserDefaults.standard.set(enabled, forKey: "autoCheckForUpdates")
-        if enabled && !hasStarted {
-            start()
+        if enabled {
+            scheduleAutomaticCheck()
+        } else {
+            automaticCheckTask?.cancel()
+            automaticCheckTask = nil
         }
     }
 
-    func checkForUpdates(interactive: Bool = true) async {
+    func setAutomaticInstallation(_ enabled: Bool) {
+        automaticallyInstallsUpdates = enabled
+        UserDefaults.standard.set(enabled, forKey: "autoInstallUpdates")
+    }
+
+    func checkForUpdates(
+        interactive: Bool = true,
+        automaticallyInstall: Bool = false
+    ) async {
         guard !isChecking, !isInstalling else { return }
         isChecking = true
         status = "正在检查更新…"
@@ -97,6 +124,7 @@ final class UpdateManager: ObservableObject {
             }
 
             let release = try JSONDecoder().decode(Release.self, from: data)
+            latestReleaseVersion = release.version
             guard Self.isNewer(release.version, than: Self.currentVersion) else {
                 availableRelease = nil
                 status = "已是最新版本 \(Self.currentVersion)"
@@ -115,6 +143,11 @@ final class UpdateManager: ObservableObject {
             }
             availableRelease = release
             status = "发现新版本 \(release.version)"
+            if automaticallyInstall && automaticallyInstallsUpdates {
+                status = "发现新版本 \(release.version)，准备自动安装…"
+                await installAvailableUpdate(automatically: true)
+                return
+            }
             if interactive {
                 showUpdateAlert(for: release)
             }
@@ -132,7 +165,7 @@ final class UpdateManager: ObservableObject {
         }
     }
 
-    func installAvailableUpdate() async {
+    func installAvailableUpdate(automatically: Bool = false) async {
         guard !isInstalling, let release = availableRelease,
               let asset = release.applicationArchive else { return }
 
@@ -167,18 +200,26 @@ final class UpdateManager: ObservableObject {
                 throw UpdateError.server("更新包中没有找到 App")
             }
             try launchReplacementScript(currentApp: Bundle.main.bundleURL, updatedApp: updatedApp)
-            status = "更新已准备，App 即将重启"
+            status = automatically ? "更新完成，App 即将重启" : "更新已准备，App 即将重启"
             availableRelease = nil
             NSApp.terminate(nil)
         } catch is CancellationError {
             status = "更新下载已取消"
         } catch {
             status = "安装更新失败：\(error.localizedDescription)"
-            showAlert(
-                title: "安装更新失败",
-                message: error.localizedDescription,
-                buttons: [("好", .alertFirstButtonReturn)]
-            )
+            if automatically {
+                showAlert(
+                    title: "自动更新失败",
+                    message: "已保留当前版本。你可以稍后从“帮助 → 检查更新…”重试。\n\n\(error.localizedDescription)",
+                    buttons: [("好", .alertFirstButtonReturn)]
+                )
+            } else {
+                showAlert(
+                    title: "安装更新失败",
+                    message: error.localizedDescription,
+                    buttons: [("好", .alertFirstButtonReturn)]
+                )
+            }
         }
     }
 
@@ -250,17 +291,60 @@ final class UpdateManager: ObservableObject {
     }
 
     nonisolated static func isNewer(_ candidate: String, than current: String) -> Bool {
-        func components(_ value: String) -> [Int] {
-            value.split(separator: ".").map { part in
-                Int(part.prefix { $0.isNumber }) ?? 0
+        func parse(_ value: String) -> (core: [Int], prerelease: [String]) {
+            var normalized = value.trimmingCharacters(in: .whitespacesAndNewlines)
+            if normalized.first == "v" || normalized.first == "V" {
+                normalized.removeFirst()
+            }
+            normalized = normalized.split(separator: "+", maxSplits: 1, omittingEmptySubsequences: false)
+                .first.map(String.init) ?? normalized
+
+            let versionParts = normalized.split(
+                separator: "-",
+                maxSplits: 1,
+                omittingEmptySubsequences: false
+            )
+            let core = versionParts.first?.split(separator: ".").map { Int($0) ?? 0 } ?? []
+            let prerelease = versionParts.count > 1
+                ? versionParts[1].split(separator: ".").map(String.init)
+                : []
+            return (core, prerelease)
+        }
+
+        let candidateVersion = parse(candidate)
+        let currentVersion = parse(current)
+        for index in 0..<max(candidateVersion.core.count, currentVersion.core.count) {
+            let candidateValue = index < candidateVersion.core.count ? candidateVersion.core[index] : 0
+            let currentValue = index < currentVersion.core.count ? currentVersion.core[index] : 0
+            if candidateValue != currentValue {
+                return candidateValue > currentValue
             }
         }
-        let candidateComponents = components(candidate)
-        let currentComponents = components(current)
-        for index in 0..<max(candidateComponents.count, currentComponents.count) {
-            let candidateValue = index < candidateComponents.count ? candidateComponents[index] : 0
-            let currentValue = index < currentComponents.count ? currentComponents[index] : 0
-            if candidateValue != currentValue { return candidateValue > currentValue }
+
+        if candidateVersion.prerelease.isEmpty != currentVersion.prerelease.isEmpty {
+            return candidateVersion.prerelease.isEmpty
+        }
+
+        for index in 0..<max(candidateVersion.prerelease.count, currentVersion.prerelease.count) {
+            guard index < candidateVersion.prerelease.count else { return false }
+            guard index < currentVersion.prerelease.count else { return true }
+
+            let candidateIdentifier = candidateVersion.prerelease[index]
+            let currentIdentifier = currentVersion.prerelease[index]
+            if candidateIdentifier == currentIdentifier { continue }
+
+            let candidateNumber = Int(candidateIdentifier)
+            let currentNumber = Int(currentIdentifier)
+            switch (candidateNumber, currentNumber) {
+            case let (candidateNumber?, currentNumber?):
+                return candidateNumber > currentNumber
+            case (_?, nil):
+                return false
+            case (nil, _?):
+                return true
+            case (nil, nil):
+                return candidateIdentifier > currentIdentifier
+            }
         }
         return false
     }

@@ -16,10 +16,16 @@ final class AppState: ObservableObject {
         let runtimeManager = RuntimeManager()
         self.logManager = logManager
         self.runtimeManager = runtimeManager
-        self.harnessManager = HarnessManager(
+        let harnessManager = HarnessManager(
             runtimeManager: runtimeManager,
             logger: logManager
         )
+        self.harnessManager = harnessManager
+        runtimeManager.setHarnessRestartHandler { [weak harnessManager] in
+            guard let harnessManager, harnessManager.hasRunningProcess else { return false }
+            await harnessManager.restart()
+            return true
+        }
         self.webViewController = WebViewController()
         self.updateManager = UpdateManager()
     }
@@ -29,6 +35,7 @@ final class AppState: ObservableObject {
         hasStarted = true
         updateManager.start()
         await harnessManager.start()
+        runtimeManager.startUpdateChecks()
     }
 
     func openLogs() {

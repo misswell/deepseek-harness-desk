@@ -20,6 +20,8 @@ struct DeepSeekHarnessDeskApp: App {
                     await appState.startIfNeeded()
                 }
         }
+        .windowStyle(.hiddenTitleBar)
+        .windowToolbarStyle(.unified)
         .commands {
             CommandMenu("View") {
                 Button("Reload") {
@@ -62,10 +64,19 @@ struct DeepSeekHarnessDeskApp: App {
             }
 
             CommandMenu("帮助") {
-                Button("检查更新…") {
+                Button("检查 App 更新…") {
                     Task { await appState.updateManager.checkForUpdates() }
                 }
                 .disabled(appState.updateManager.isChecking || appState.updateManager.isInstalling)
+
+                Button("检查内置 dsh 更新…") {
+                    Task { await appState.runtimeManager.checkForUpdates() }
+                }
+                .disabled(
+                    appState.runtimeManager.isCheckingForUpdates ||
+                    appState.runtimeManager.isUpdating ||
+                    appState.runtimeManager.isInstalling
+                )
             }
         }
 

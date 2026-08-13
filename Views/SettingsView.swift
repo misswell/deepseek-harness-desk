@@ -9,6 +9,9 @@ struct SettingsView: View {
             GeneralSettingsView()
                 .tabItem { Label("通用", systemImage: "gear") }
 
+            UpdatesSettingsView()
+                .tabItem { Label("更新", systemImage: "arrow.triangle.2.circlepath") }
+
             HarnessSettingsView()
                 .tabItem { Label("Harness", systemImage: "shippingbox") }
 
@@ -19,30 +22,80 @@ struct SettingsView: View {
                 .tabItem { Label("关于", systemImage: "info.circle") }
         }
         .padding(20)
-        .frame(width: 560, height: 360)
+        .frame(width: 640, height: 540)
+    }
+}
+
+private struct UpdatesSettingsView: View {
+    @EnvironmentObject private var updateManager: UpdateManager
+    @EnvironmentObject private var runtimeManager: RuntimeManager
+
+    var body: some View {
+        Form {
+            Section("App 壳子") {
+                LabeledContent("当前版本", value: UpdateManager.currentVersion)
+                LabeledContent("最新版本", value: updateManager.latestReleaseVersion ?? "未检查")
+                LabeledContent("状态", value: updateManager.status.isEmpty ? "未检查" : updateManager.status)
+                Toggle(
+                    "自动检查 App 更新",
+                    isOn: Binding(
+                        get: { updateManager.automaticallyChecksForUpdates },
+                        set: { updateManager.setAutomaticChecks($0) }
+                    )
+                )
+                Toggle(
+                    "自动安装 App 更新",
+                    isOn: Binding(
+                        get: { updateManager.automaticallyInstallsUpdates },
+                        set: { updateManager.setAutomaticInstallation($0) }
+                    )
+                )
+                Button("检查 App 更新…") {
+                    Task { await updateManager.checkForUpdates() }
+                }
+                .disabled(updateManager.isChecking || updateManager.isInstalling)
+            }
+
+            Section("内置 DeepSeek Harness / dsh") {
+                LabeledContent("当前版本", value: runtimeManager.isUsingManagedRuntime ? runtimeManager.managedHarnessVersion : "未使用内置 Runtime")
+                LabeledContent("最新版本", value: runtimeManager.latestHarnessVersion ?? "未检查")
+                LabeledContent("状态", value: runtimeManager.updateStatus.isEmpty ? "未检查" : runtimeManager.updateStatus)
+                Toggle(
+                    "自动检查内置 dsh 更新",
+                    isOn: Binding(
+                        get: { runtimeManager.automaticallyChecksForUpdates },
+                        set: { runtimeManager.setAutomaticChecks($0) }
+                    )
+                )
+                Toggle(
+                    "自动安装内置 dsh 更新",
+                    isOn: Binding(
+                        get: { runtimeManager.automaticallyInstallsUpdates },
+                        set: { runtimeManager.setAutomaticInstallation($0) }
+                    )
+                )
+                Button("检查内置 dsh 更新…") {
+                    Task { await runtimeManager.checkForUpdates() }
+                }
+                .disabled(
+                    runtimeManager.isCheckingForUpdates ||
+                    runtimeManager.isUpdating ||
+                    runtimeManager.isInstalling
+                )
+            }
+        }
+        .formStyle(.grouped)
     }
 }
 
 private struct GeneralSettingsView: View {
     @AppStorage("launchAtLogin") private var launchAtLogin = false
     @AppStorage("restoreLastWindow") private var restoreLastWindow = true
-    @EnvironmentObject private var updateManager: UpdateManager
 
     var body: some View {
         Form {
             Toggle("登录时启动", isOn: $launchAtLogin)
             Toggle("恢复上次窗口", isOn: $restoreLastWindow)
-            Toggle(
-                "自动检查更新",
-                isOn: Binding(
-                    get: { updateManager.automaticallyChecksForUpdates },
-                    set: { updateManager.setAutomaticChecks($0) }
-                )
-            )
-            Button("立即检查更新…") {
-                Task { await updateManager.checkForUpdates() }
-            }
-            .disabled(updateManager.isChecking || updateManager.isInstalling)
         }
         .formStyle(.grouped)
     }

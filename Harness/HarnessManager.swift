@@ -109,7 +109,7 @@ final class HarnessManager: ObservableObject {
         port = selectedPort
         serverURL = URL(string: "http://127.0.0.1:\(selectedPort)")
         runtimeVersion = runtimeManager.isUsingManagedRuntime
-            ? "Managed Runtime · \(RuntimeManager.harnessVersion)"
+            ? "Managed Runtime · \(runtimeManager.managedHarnessVersion)"
             : "系统 PATH · \(executableURL.lastPathComponent)"
         lastExitCode = nil
 

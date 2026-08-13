@@ -17,8 +17,10 @@ enum RuntimeInstallState: Equatable, Sendable {
 
 @MainActor
 final class RuntimeManager: ObservableObject {
+    static let packageName = "@deepseek-ai/dsh"
     static let harnessVersion = "0.1.0-rc.6"
     static let nodeVersion = "24.19.0"
+    static let npmMetadataURL = URL(string: "https://registry.npmjs.org/@deepseek-ai%2fdsh")!
 
     @Published private(set) var dshExecutableURL: URL?
     @Published private(set) var nodeExecutableURL: URL?
@@ -26,6 +28,13 @@ final class RuntimeManager: ObservableObject {
     @Published private(set) var installState: RuntimeInstallState = .ready
     @Published private(set) var installationMessage = ""
     @Published private(set) var isUsingManagedRuntime = false
+    @Published private(set) var managedHarnessVersion: String
+    @Published private(set) var latestHarnessVersion: String?
+    @Published private(set) var updateStatus = ""
+    @Published private(set) var isCheckingForUpdates = false
+    @Published private(set) var isUpdating = false
+    @Published private(set) var automaticallyChecksForUpdates: Bool
+    @Published private(set) var automaticallyInstallsUpdates: Bool
 
     var needsInstallation: Bool {
         dshExecutableURL == nil
@@ -37,14 +46,27 @@ final class RuntimeManager: ObservableObject {
 
     private let fileManager = FileManager.default
     private var installationTask: Task<Void, Never>?
+    private var updateCheckTask: Task<Void, Never>?
+    private var harnessRestartHandler: (() async -> Bool)?
 
     init() {
         self.status = "正在检查 DeepSeek Harness"
+        self.managedHarnessVersion = UserDefaults.standard.string(forKey: "managedHarnessVersion") ?? Self.harnessVersion
+        if UserDefaults.standard.object(forKey: "autoCheckHarnessUpdates") == nil {
+            UserDefaults.standard.set(true, forKey: "autoCheckHarnessUpdates")
+        }
+        if UserDefaults.standard.object(forKey: "autoInstallHarnessUpdates") == nil {
+            UserDefaults.standard.set(true, forKey: "autoInstallHarnessUpdates")
+        }
+        automaticallyChecksForUpdates = UserDefaults.standard.bool(forKey: "autoCheckHarnessUpdates")
+        automaticallyInstallsUpdates = UserDefaults.standard.bool(forKey: "autoInstallHarnessUpdates")
+        managedHarnessVersion = activeHarnessVersion
         refresh()
     }
 
     deinit {
         installationTask?.cancel()
+        updateCheckTask?.cancel()
     }
 
     func refresh() {
@@ -52,7 +74,8 @@ final class RuntimeManager: ObservableObject {
         if fileManager.isExecutableFile(atPath: managedDsh.path) {
             dshExecutableURL = managedDsh
             nodeExecutableURL = managedNodeExecutableURL
-            status = "Managed Harness \(Self.harnessVersion)"
+            managedHarnessVersion = activeHarnessVersion
+            status = "Managed Harness \(managedHarnessVersion)"
             isUsingManagedRuntime = true
             if !isInstalling {
                 installState = .installed
@@ -77,6 +100,21 @@ final class RuntimeManager: ObservableObject {
         }
     }
 
+    func startUpdateChecks() {
+        guard updateCheckTask == nil, automaticallyChecksForUpdates else { return }
+
+        updateCheckTask = Task { @MainActor [weak self] in
+            try? await Task.sleep(for: .seconds(4))
+            guard !Task.isCancelled, let self else { return }
+            await self.checkForUpdates(interactive: false, automaticallyInstall: true)
+            self.updateCheckTask = nil
+        }
+    }
+
+    func setHarnessRestartHandler(_ handler: @escaping () async -> Bool) {
+        harnessRestartHandler = handler
+    }
+
     func install() async {
         guard !isInstalling else { return }
 
@@ -88,6 +126,100 @@ final class RuntimeManager: ObservableObject {
         }
         await installationTask?.value
         installationTask = nil
+    }
+
+    func setAutomaticChecks(_ enabled: Bool) {
+        automaticallyChecksForUpdates = enabled
+        UserDefaults.standard.set(enabled, forKey: "autoCheckHarnessUpdates")
+        if enabled {
+            startUpdateChecks()
+        } else {
+            updateCheckTask?.cancel()
+            updateCheckTask = nil
+        }
+    }
+
+    func setAutomaticInstallation(_ enabled: Bool) {
+        automaticallyInstallsUpdates = enabled
+        UserDefaults.standard.set(enabled, forKey: "autoInstallHarnessUpdates")
+    }
+
+    func checkForUpdates(
+        interactive: Bool = true,
+        automaticallyInstall: Bool = false
+    ) async {
+        guard !isCheckingForUpdates, !isUpdating, !isInstalling else { return }
+        refresh()
+        guard isUsingManagedRuntime else {
+            updateStatus = needsInstallation
+                ? "尚未安装内置 dsh，完成一键安装后可检查更新。"
+                : "当前使用系统 PATH 中的 dsh，不管理系统安装。"
+            if interactive {
+                showUpdateAlert(
+                    title: "无法检查内置 dsh",
+                    message: updateStatus,
+                    buttons: [("好", .alertFirstButtonReturn)]
+                )
+            }
+            return
+        }
+
+        isCheckingForUpdates = true
+        updateStatus = "正在检查内置 DeepSeek Harness 更新…"
+        defer { isCheckingForUpdates = false }
+
+        do {
+            var request = URLRequest(url: Self.npmMetadataURL)
+            request.setValue("DeepSeek Harness Desk/\(Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "0.2.1")", forHTTPHeaderField: "User-Agent")
+            let (data, response) = try await URLSession.shared.data(for: request)
+            if let httpResponse = response as? HTTPURLResponse,
+               !(200..<300).contains(httpResponse.statusCode) {
+                throw RuntimeError.updateFailed("npm 返回 HTTP \(httpResponse.statusCode)")
+            }
+
+            let metadata = try JSONDecoder().decode(NPMPackageMetadata.self, from: data)
+            guard let latest = metadata.distTags.latest, !latest.isEmpty else {
+                throw RuntimeError.updateFailed("npm 未返回 \(Self.packageName) 的 latest 版本")
+            }
+            latestHarnessVersion = latest
+
+            guard UpdateManager.isNewer(latest, than: managedHarnessVersion) else {
+                updateStatus = "内置 dsh 已是最新版本 \(managedHarnessVersion)"
+                if interactive {
+                    showUpdateAlert(
+                        title: "内置 dsh 已是最新版本",
+                        message: "当前版本：\(managedHarnessVersion)\n最新版本：\(latest)",
+                        buttons: [("好", .alertFirstButtonReturn)]
+                    )
+                }
+                return
+            }
+
+            updateStatus = "发现内置 dsh 新版本 \(latest)"
+            if automaticallyInstall && automaticallyInstallsUpdates {
+                updateStatus = "发现内置 dsh 新版本 \(latest)，准备自动安装…"
+                await installAvailableUpdate(version: latest, automatically: true)
+            } else if interactive {
+                showUpdateAlert(for: latest)
+            }
+        } catch is CancellationError {
+            updateStatus = "内置 dsh 更新检查已取消"
+        } catch {
+            updateStatus = "内置 dsh 检查失败：\(error.localizedDescription)"
+            if interactive {
+                showUpdateAlert(
+                    title: "检查内置 dsh 更新失败",
+                    message: error.localizedDescription,
+                    buttons: [("好", .alertFirstButtonReturn)]
+                )
+            }
+        }
+    }
+
+    func installAvailableUpdate() async {
+        guard let latestHarnessVersion,
+              UpdateManager.isNewer(latestHarnessVersion, than: managedHarnessVersion) else { return }
+        await installAvailableUpdate(version: latestHarnessVersion, automatically: false)
     }
 
     func processEnvironment() -> [String: String] {
@@ -159,7 +291,8 @@ final class RuntimeManager: ObservableObject {
                 try await installHarness(
                     into: dshRoot,
                     nodeRoot: nodeRoot,
-                    stagingDirectory: stagingDirectory
+                    stagingDirectory: stagingDirectory,
+                    version: Self.harnessVersion
                 )
             }
 
@@ -167,6 +300,7 @@ final class RuntimeManager: ObservableObject {
                 throw RuntimeError.installationFailed("DeepSeek Harness 安装后未找到 dsh 命令。")
             }
 
+            UserDefaults.standard.set(Self.harnessVersion, forKey: "managedHarnessVersion")
             refresh()
             installationMessage = "安装完成"
             installState = .installed
@@ -221,7 +355,8 @@ final class RuntimeManager: ObservableObject {
     private func installHarness(
         into dshRoot: URL,
         nodeRoot: URL,
-        stagingDirectory: URL
+        stagingDirectory: URL,
+        version: String
     ) async throws {
         let npmURL = nodeRoot.appendingPathComponent("bin/npm")
         guard fileManager.isExecutableFile(atPath: npmURL.path) else {
@@ -230,7 +365,7 @@ final class RuntimeManager: ObservableObject {
 
         let dshStaging = stagingDirectory.appendingPathComponent("dsh", isDirectory: true)
         try fileManager.createDirectory(at: dshStaging, withIntermediateDirectories: true)
-        setInstalling("正在安装 DeepSeek Harness \(Self.harnessVersion)…")
+        setInstalling("正在安装 DeepSeek Harness \(version)…")
         let result = try await ProcessRunner.run(
             executableURL: npmURL,
             arguments: [
@@ -240,7 +375,7 @@ final class RuntimeManager: ObservableObject {
                 "--no-fund",
                 "--no-update-notifier",
                 "--no-package-lock",
-                "@deepseek-ai/dsh@\(Self.harnessVersion)"
+                "\(Self.packageName)@\(version)"
             ],
             environment: processEnvironmentForNode(nodeRoot: nodeRoot),
             currentDirectoryURL: dshStaging
@@ -313,6 +448,10 @@ final class RuntimeManager: ObservableObject {
         dshExecutable(at: managedDshDirectory)
     }
 
+    private var activeHarnessVersion: String {
+        UserDefaults.standard.string(forKey: "managedHarnessVersion") ?? Self.harnessVersion
+    }
+
     private var managedNodeDirectory: URL {
         PathUtils.applicationSupportDirectory
             .appendingPathComponent("runtime/node/\(Self.nodeVersion)", isDirectory: true)
@@ -320,7 +459,105 @@ final class RuntimeManager: ObservableObject {
 
     private var managedDshDirectory: URL {
         PathUtils.applicationSupportDirectory
-            .appendingPathComponent("runtime/dsh/\(Self.harnessVersion)", isDirectory: true)
+            .appendingPathComponent("runtime/dsh/\(activeHarnessVersion)", isDirectory: true)
+    }
+
+    private func installAvailableUpdate(version: String, automatically: Bool) async {
+        guard !isUpdating, isUsingManagedRuntime,
+              let nodeExecutableURL else { return }
+
+        isUpdating = true
+        let restartHarness = harnessRestartHandler
+        setInstalling("正在下载并安装内置 dsh \(version)…")
+        let runtimeDirectory = PathUtils.applicationSupportDirectory
+            .appendingPathComponent("runtime", isDirectory: true)
+        let stagingDirectory = runtimeDirectory
+            .appendingPathComponent(".dsh-update-\(UUID().uuidString)", isDirectory: true)
+        let dshRoot = runtimeDirectory
+            .appendingPathComponent("dsh", isDirectory: true)
+            .appendingPathComponent(version, isDirectory: true)
+        var didInstall = false
+
+        do {
+            try fileManager.createDirectory(at: stagingDirectory, withIntermediateDirectories: true)
+            defer { try? fileManager.removeItem(at: stagingDirectory) }
+            let nodeRoot = nodeExecutableURL.deletingLastPathComponent().deletingLastPathComponent()
+            try await installHarness(
+                into: dshRoot,
+                nodeRoot: nodeRoot,
+                stagingDirectory: stagingDirectory,
+                version: version
+            )
+            UserDefaults.standard.set(version, forKey: "managedHarnessVersion")
+            latestHarnessVersion = version
+            managedHarnessVersion = version
+            refresh()
+            installationMessage = "内置 dsh 更新完成"
+            updateStatus = automatically
+                ? "内置 dsh 已更新到 \(version)"
+                : "内置 dsh 更新完成：\(version)"
+            installState = .installed
+            didInstall = true
+        } catch is CancellationError {
+            updateStatus = "内置 dsh 更新已取消"
+            installationMessage = updateStatus
+            installState = .ready
+        } catch {
+            let message = error.localizedDescription
+            updateStatus = "内置 dsh 更新失败：\(message)"
+            installationMessage = message
+            installState = .failed(message)
+            if automatically {
+                showUpdateAlert(
+                    title: "内置 dsh 自动更新失败",
+                    message: "已保留当前版本 \(managedHarnessVersion)。\n\n\(message)",
+                    buttons: [("好", .alertFirstButtonReturn)]
+                )
+            } else {
+                showUpdateAlert(
+                    title: "内置 dsh 更新失败",
+                    message: message,
+                    buttons: [("好", .alertFirstButtonReturn)]
+                )
+            }
+        }
+        isUpdating = false
+
+        if didInstall, let restartHarness {
+            updateStatus = "内置 dsh 已更新到 \(version)，正在重启 Harness…"
+            if await restartHarness() {
+                updateStatus = automatically
+                    ? "内置 dsh 已更新到 \(version)"
+                    : "内置 dsh 更新完成：\(version)"
+            }
+        }
+    }
+
+    private func showUpdateAlert(for version: String) {
+        let alert = NSAlert()
+        alert.messageText = "发现内置 dsh 新版本"
+        alert.informativeText = "当前版本：\(managedHarnessVersion)\n最新版本：\(version)\n\n现在下载并安装吗？"
+        alert.alertStyle = .informational
+        alert.addButton(withTitle: "更新")
+        alert.addButton(withTitle: "稍后")
+        if alert.runModal() == .alertFirstButtonReturn {
+            Task { await installAvailableUpdate(version: version, automatically: false) }
+        }
+    }
+
+    private func showUpdateAlert(
+        title: String,
+        message: String,
+        buttons: [(String, NSApplication.ModalResponse)]
+    ) {
+        let alert = NSAlert()
+        alert.messageText = title
+        alert.informativeText = message
+        alert.alertStyle = .warning
+        for (title, _) in buttons {
+            alert.addButton(withTitle: title)
+        }
+        _ = alert.runModal()
     }
 
     private func nodeExecutable(at root: URL) -> URL {
@@ -343,11 +580,26 @@ final class RuntimeManager: ObservableObject {
 
 enum RuntimeError: LocalizedError {
     case installationFailed(String)
+    case updateFailed(String)
 
     var errorDescription: String? {
         switch self {
         case let .installationFailed(message):
             return message
+        case let .updateFailed(message):
+            return message
         }
+    }
+}
+
+private struct NPMPackageMetadata: Decodable {
+    struct DistTags: Decodable {
+        let latest: String?
+    }
+
+    let distTags: DistTags
+
+    enum CodingKeys: String, CodingKey {
+        case distTags = "dist-tags"
     }
 }
