@@ -10,6 +10,7 @@ struct DeepSeekHarnessDeskApp: App {
         WindowGroup {
             MainView()
                 .environmentObject(appState)
+                .environmentObject(appDelegate)
                 .environmentObject(appState.harnessManager)
                 .environmentObject(appState.runtimeManager)
                 .environmentObject(appState.webViewController)
@@ -93,6 +94,7 @@ struct DeepSeekHarnessDeskApp: App {
         Settings {
             SettingsView()
                 .environmentObject(appState)
+                .environmentObject(appDelegate)
                 .environmentObject(appState.harnessManager)
                 .environmentObject(appState.runtimeManager)
                 .environmentObject(appState.updateManager)

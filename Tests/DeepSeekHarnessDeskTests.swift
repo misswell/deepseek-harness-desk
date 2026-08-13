@@ -41,6 +41,40 @@ final class DeepSeekHarnessDeskTests: XCTestCase {
         XCTAssertNil(PortScanner.firstAvailable(startingAt: 3099, endingAt: 3080))
     }
 
+    func testManagedHarnessCommandMatchesOnlyExpectedPortRange() {
+        let executablePath = "/Users/example/Library/Application Support/DeepSeek Harness Desk/runtime/dsh/.bin/dsh"
+        let portRange: ClosedRange<UInt16> = 3080...3099
+
+        XCTAssertTrue(
+            ProcessUtils.isManagedHarnessCommand(
+                "node \(executablePath) web --port 3092",
+                executablePath: executablePath,
+                portRange: portRange
+            )
+        )
+        XCTAssertFalse(
+            ProcessUtils.isManagedHarnessCommand(
+                "node \(executablePath) web --port 3079",
+                executablePath: executablePath,
+                portRange: portRange
+            )
+        )
+        XCTAssertFalse(
+            ProcessUtils.isManagedHarnessCommand(
+                "node /tmp/other-dsh web --port 3092",
+                executablePath: executablePath,
+                portRange: portRange
+            )
+        )
+        XCTAssertFalse(
+            ProcessUtils.isManagedHarnessCommand(
+                "node \(executablePath) web --port 30920",
+                executablePath: executablePath,
+                portRange: portRange
+            )
+        )
+    }
+
     func testUpdateManagerComparesVersionsNumerically() {
         XCTAssertTrue(UpdateManager.isNewer("0.2.0", than: "0.1.0"))
         XCTAssertTrue(UpdateManager.isNewer("1.0.0", than: "0.99.9"))

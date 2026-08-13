@@ -89,6 +89,7 @@ private struct UpdatesSettingsView: View {
 }
 
 private struct GeneralSettingsView: View {
+    @EnvironmentObject private var appDelegate: AppDelegate
     @AppStorage("launchAtLogin") private var launchAtLogin = false
     @AppStorage("restoreLastWindow") private var restoreLastWindow = true
 
@@ -96,6 +97,16 @@ private struct GeneralSettingsView: View {
         Form {
             Toggle("登录时启动", isOn: $launchAtLogin)
             Toggle("恢复上次窗口", isOn: $restoreLastWindow)
+            Toggle(
+                "在 Dock 中显示图标",
+                isOn: Binding(
+                    get: { appDelegate.showsDockIcon },
+                    set: { appDelegate.setShowsDockIcon($0) }
+                )
+            )
+            Text("关闭后应用会继续运行，并通过菜单栏图标打开。")
+                .font(.footnote)
+                .foregroundStyle(.secondary)
         }
         .formStyle(.grouped)
     }

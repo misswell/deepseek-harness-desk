@@ -3,6 +3,11 @@ import SwiftUI
 
 @MainActor
 final class HarnessManager: ObservableObject {
+    nonisolated private static let managedPortRange: ClosedRange<UInt16> = 3080...3099
+    private static let lastProcessIDKey = "lastHarnessProcessID"
+    private static let lastProcessPortKey = "lastHarnessProcessPort"
+    private static let lastProcessExecutableKey = "lastHarnessProcessExecutable"
+
     @Published private(set) var state: HarnessState = .stopped
     @Published private(set) var pid: Int32?
     @Published private(set) var port: UInt16?
@@ -49,7 +54,14 @@ final class HarnessManager: ObservableObject {
             state = .running
             return
         }
-        guard !state.isBusy else { return }
+        if state.isBusy {
+            if state == .starting, process?.isRunning != true {
+                cleanupProcessReferences()
+                state = .stopped
+            } else {
+                return
+            }
+        }
 
         recoveryTask?.cancel()
         recoveryTask = nil
@@ -63,7 +75,12 @@ final class HarnessManager: ObservableObject {
             return
         }
 
-        guard let selectedPort = PortScanner.firstAvailable() else {
+        await reapOrphanedProcesses(using: executableURL)
+
+        guard let selectedPort = PortScanner.firstAvailable(
+            startingAt: Self.managedPortRange.lowerBound,
+            endingAt: Self.managedPortRange.upperBound
+        ) else {
             fail(with: "3080–3099 端口均不可用。请关闭占用这些端口的应用后重试。")
             return
         }
@@ -122,6 +139,11 @@ final class HarnessManager: ObservableObject {
             try candidate.run()
             pid = candidate.processIdentifier
             startTime = Date()
+            rememberProcess(
+                pid: candidate.processIdentifier,
+                port: selectedPort,
+                executableURL: executableURL
+            )
         } catch {
             cleanupProcessReferences()
             fail(with: "启动 dsh 失败：\(error.localizedDescription)")
@@ -185,12 +207,19 @@ final class HarnessManager: ObservableObject {
                     force: true
                 )
             }.value
-            while currentProcess.isRunning {
+            let forceDeadline = Date().addingTimeInterval(3)
+            while currentProcess.isRunning, Date() < forceDeadline {
                 try? await Task.sleep(nanoseconds: 100_000_000)
             }
         }
 
         if process === currentProcess {
+            if currentProcess.isRunning {
+                logger.append(
+                    "Harness process did not confirm exit before cleanup; it will be reaped on next launch",
+                    to: .desk
+                )
+            }
             cleanupProcessReferences()
             state = .stopped
             intentionalStop = false
@@ -215,7 +244,8 @@ final class HarnessManager: ObservableObject {
                 force: true
             )
         }.value
-        while currentProcess.isRunning {
+        let deadline = Date().addingTimeInterval(5)
+        while currentProcess.isRunning, Date() < deadline {
             try? await Task.sleep(nanoseconds: 50_000_000)
         }
         cleanupProcessReferences()
@@ -281,7 +311,67 @@ final class HarnessManager: ObservableObject {
         process = nil
         pid = nil
         clearRuntimeMetadata()
+        clearRememberedProcess()
         activeGeneration = UUID()
+    }
+
+    private func reapOrphanedProcesses(using executableURL: URL) async {
+        let rememberedProcess = rememberedProcessRecord()
+        let shouldScanManagedRuntime = runtimeManager.isUsingManagedRuntime
+        let processIDs = await Task.detached(priority: .userInitiated) {
+            if shouldScanManagedRuntime {
+                return ProcessUtils.terminateManagedHarnessProcesses(
+                    executableURL: executableURL,
+                    portRange: Self.managedPortRange
+                )
+            }
+
+            guard let rememberedProcess,
+                  rememberedProcess.executablePath == executableURL.path,
+                  let matchingPID = ProcessUtils.managedHarnessProcessIDs(
+                    executableURL: executableURL,
+                    portRange: Self.managedPortRange
+                  ).first(where: { $0 == rememberedProcess.pid }) else {
+                return []
+            }
+
+            ProcessUtils.terminateProcessTreeAndWait(rootPID: matchingPID)
+            return [matchingPID]
+        }.value
+
+        if !processIDs.isEmpty {
+            logger.append(
+                "Reaped orphaned Harness process(es): \(processIDs.map(String.init).joined(separator: ", "))",
+                to: .desk
+            )
+        }
+        clearRememberedProcess()
+    }
+
+    private func rememberProcess(pid: Int32, port: UInt16, executableURL: URL) {
+        let defaults = UserDefaults.standard
+        defaults.set(Int(pid), forKey: Self.lastProcessIDKey)
+        defaults.set(Int(port), forKey: Self.lastProcessPortKey)
+        defaults.set(executableURL.path, forKey: Self.lastProcessExecutableKey)
+    }
+
+    private func rememberedProcessRecord() -> (pid: Int32, port: UInt16, executablePath: String)? {
+        let defaults = UserDefaults.standard
+        let pid = defaults.integer(forKey: Self.lastProcessIDKey)
+        let port = defaults.integer(forKey: Self.lastProcessPortKey)
+        guard pid > 0,
+              port > 0,
+              let executablePath = defaults.string(forKey: Self.lastProcessExecutableKey) else {
+            return nil
+        }
+        return (Int32(pid), UInt16(port), executablePath)
+    }
+
+    private func clearRememberedProcess() {
+        let defaults = UserDefaults.standard
+        defaults.removeObject(forKey: Self.lastProcessIDKey)
+        defaults.removeObject(forKey: Self.lastProcessPortKey)
+        defaults.removeObject(forKey: Self.lastProcessExecutableKey)
     }
 
     private func clearRuntimeMetadata() {
