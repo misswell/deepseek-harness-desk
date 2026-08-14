@@ -77,6 +77,12 @@ final class HarnessManager: ObservableObject {
 
         await reapOrphanedProcesses(using: executableURL)
 
+        guard !Task.isCancelled else {
+            state = .stopped
+            clearRuntimeMetadata()
+            return
+        }
+
         guard let selectedPort = PortScanner.firstAvailable(
             startingAt: Self.managedPortRange.lowerBound,
             endingAt: Self.managedPortRange.upperBound
@@ -156,9 +162,14 @@ final class HarnessManager: ObservableObject {
             return
         }
 
+        logger.append("Waiting for Harness health at \(url.absoluteString)", to: .desk)
+
         do {
             try await HarnessHealthMonitor.waitUntilHealthy(at: url)
         } catch is CancellationError {
+            guard activeGeneration == generation, process === candidate else { return }
+            logger.append("Harness health check was cancelled; cleaning up", to: .desk)
+            await stop()
             return
         } catch {
             guard activeGeneration == generation, process === candidate else { return }
@@ -168,7 +179,20 @@ final class HarnessManager: ObservableObject {
             return
         }
 
-        guard activeGeneration == generation, process === candidate, candidate.isRunning else {
+        guard !Task.isCancelled else {
+            await stop()
+            return
+        }
+
+        guard activeGeneration == generation, process === candidate else {
+            return
+        }
+
+        guard candidate.isRunning else {
+            let exitCode = candidate.terminationStatus
+            cleanupProcessReferences()
+            lastExitCode = exitCode
+            fail(with: "DeepSeek Harness 在健康检查完成前退出（退出码 \(exitCode)）。")
             return
         }
 

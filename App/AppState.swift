@@ -10,6 +10,7 @@ final class AppState: ObservableObject {
     let updateManager: UpdateManager
 
     private var hasStarted = false
+    private var startupTask: Task<Void, Never>?
 
     init() {
         let logManager = LogManager()
@@ -30,12 +31,20 @@ final class AppState: ObservableObject {
         self.updateManager = UpdateManager()
     }
 
-    func startIfNeeded() async {
+    deinit {
+        startupTask?.cancel()
+    }
+
+    func startIfNeeded() {
         guard !hasStarted else { return }
         hasStarted = true
-        updateManager.start()
-        await harnessManager.start()
-        runtimeManager.startUpdateChecks()
+        startupTask = Task { @MainActor [weak self] in
+            guard let self else { return }
+            updateManager.start()
+            await harnessManager.start()
+            runtimeManager.startUpdateChecks()
+            startupTask = nil
+        }
     }
 
     func restoreWindowContent(forceReload: Bool = false) {

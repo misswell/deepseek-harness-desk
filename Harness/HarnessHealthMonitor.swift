@@ -21,15 +21,22 @@ enum HarnessHealthMonitor {
         interval: TimeInterval = 0.4
     ) async throws {
         let deadline = Date().addingTimeInterval(timeout)
+        let session = makeLocalSession()
+        defer { session.invalidateAndCancel() }
 
         while Date() < deadline {
             try Task.checkCancellation()
 
-            var request = URLRequest(url: url)
-            request.timeoutInterval = min(1.5, max(0.1, deadline.timeIntervalSinceNow))
+            var request = URLRequest(
+                url: url,
+                cachePolicy: .reloadIgnoringLocalCacheData,
+                timeoutInterval: min(1.5, max(0.1, deadline.timeIntervalSinceNow))
+            )
+            request.setValue("no-cache", forHTTPHeaderField: "Cache-Control")
+            request.setValue("DeepSeek-Harness-Desk-Health-Check", forHTTPHeaderField: "User-Agent")
 
             do {
-                let (_, response) = try await URLSession.shared.data(for: request)
+                let (_, response) = try await session.data(for: request)
                 guard let httpResponse = response as? HTTPURLResponse else {
                     throw HealthError.invalidResponse
                 }
@@ -52,5 +59,18 @@ enum HarnessHealthMonitor {
         }
 
         throw HealthError.timeout(url)
+    }
+
+    private static func makeLocalSession() -> URLSession {
+        let configuration = URLSessionConfiguration.ephemeral
+        configuration.waitsForConnectivity = false
+        configuration.timeoutIntervalForRequest = 1.5
+        configuration.timeoutIntervalForResource = 2
+        configuration.connectionProxyDictionary = [
+            "HTTPEnable": 0,
+            "HTTPSEnable": 0,
+            "SOCKSEnable": 0
+        ]
+        return URLSession(configuration: configuration)
     }
 }

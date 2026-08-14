@@ -28,7 +28,7 @@ struct DeepSeekHarnessDeskApp: App {
                     }
                 }
                 .task {
-                    await appState.startIfNeeded()
+                    appState.startIfNeeded()
                 }
                 .background(WindowChromeConfigurator())
         }

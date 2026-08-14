@@ -36,19 +36,24 @@ enum ProcessUtils {
         executablePath: String,
         portRange: ClosedRange<UInt16>
     ) -> Bool {
-        guard command.contains(executablePath),
-              let portMarker = command.range(of: "web --port ") else {
+        let commandMarker = "\(executablePath) web --port "
+        guard let markerRange = command.range(of: commandMarker) else {
             return false
         }
 
-        let portAndArguments = command[portMarker.upperBound...]
+        if markerRange.lowerBound != command.startIndex {
+            let precedingCharacter = command[command.startIndex..<markerRange.lowerBound].last
+            guard precedingCharacter?.isWhitespace == true else { return false }
+        }
+
+        let portAndArguments = command[markerRange.upperBound...]
         let portText = portAndArguments.prefix { !$0.isWhitespace }
         guard let port = UInt16(portText), portRange.contains(port) else {
             return false
         }
 
-        return portAndArguments.dropFirst(portText.count).isEmpty ||
-            portAndArguments.dropFirst(portText.count).first?.isWhitespace == true
+        return portAndArguments.dropFirst(portText.count)
+            .allSatisfy(\.isWhitespace)
     }
 
     static func isProcessAlive(_ pid: Int32) -> Bool {
