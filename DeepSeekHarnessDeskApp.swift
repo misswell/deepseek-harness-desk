@@ -7,7 +7,10 @@ struct DeepSeekHarnessDeskApp: App {
     @Environment(\.scenePhase) private var scenePhase
 
     var body: some Scene {
-        WindowGroup(id: "main") {
+        // The main UI is a singleton. WindowGroup is intentionally
+        // multi-instance; using it here lets every existing MainView receive
+        // the reopen notification and create another window.
+        Window("DeepSeek Harness Desk", id: "main") {
             MainView()
                 .environmentObject(appState)
                 .environmentObject(appDelegate)

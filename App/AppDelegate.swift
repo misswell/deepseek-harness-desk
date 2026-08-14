@@ -28,6 +28,10 @@ struct WindowChromeConfigurator: NSViewRepresentable {
 /// outside SwiftUI/WKWebView is important: WebKit otherwise consumes the
 /// mouse-down before AppKit can start a window drag.
 final class WindowDragOverlayView: NSView {
+    override var mouseDownCanMoveWindow: Bool {
+        true
+    }
+
     override func acceptsFirstMouse(for event: NSEvent?) -> Bool {
         true
     }
@@ -37,6 +41,10 @@ final class WindowDragOverlayView: NSView {
     }
 
     override func mouseDown(with event: NSEvent) {
+        guard event.clickCount == 1 else {
+            super.mouseDown(with: event)
+            return
+        }
         window?.performDrag(with: event)
     }
 }
@@ -89,8 +97,8 @@ final class WindowChromeView: NSView {
         }
         window.isMovableByWindowBackground = true
 
+        installWindowDragOverlay(in: window)
         if isMainWindow {
-            installWindowDragOverlay(in: window)
             if let closeButton = window.standardWindowButton(.closeButton) {
                 closeButton.target = self
                 closeButton.action = #selector(hideMainWindowFromCloseButton(_:))
@@ -242,9 +250,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, Obse
         mainWindow.delegate = self
     }
 
-    /// Hide the main window instead of closing it. SwiftUI cannot reliably
-    /// recreate a destroyed WindowGroup window later, so the Dock click needs
-    /// the same window object to remain alive and simply be shown again.
+    /// Hide the main window instead of closing it. Keeping the singleton Window
+    /// alive lets Dock and status-item clicks reveal the same window object.
     func windowShouldClose(_ sender: NSWindow) -> Bool {
         guard sender === mainWindow else { return true }
         sender.orderOut(nil)
