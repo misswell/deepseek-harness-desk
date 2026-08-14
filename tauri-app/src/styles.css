@@ -269,101 +269,6 @@ button:disabled {
   opacity: 0.43;
 }
 
-.desk-toolbar {
-  position: fixed;
-  z-index: 8;
-  right: 16px;
-  bottom: 16px;
-  display: flex;
-  align-items: center;
-  gap: 7px;
-  padding: 5px;
-  border: 1px solid rgba(39, 56, 92, 0.12);
-  border-radius: 12px;
-  background: rgba(255, 255, 255, 0.76);
-  box-shadow: 0 9px 24px rgba(39, 56, 92, 0.16);
-  -webkit-backdrop-filter: blur(16px) saturate(130%);
-  backdrop-filter: blur(16px) saturate(130%);
-}
-
-.desk-status {
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-  padding: 0 5px;
-  color: var(--muted);
-  font-size: 10px;
-  font-weight: 700;
-}
-
-.desk-status .status-dot {
-  width: 7px;
-  height: 7px;
-  border-radius: 50%;
-  background: #b8c0cf;
-}
-
-.desk-status.running .status-dot {
-  background: var(--green);
-  box-shadow: 0 0 0 4px rgba(54, 181, 143, 0.14);
-}
-
-.desk-status.starting .status-dot {
-  background: #efb343;
-  box-shadow: 0 0 0 4px rgba(239, 179, 67, 0.14);
-  animation: pulse 1.3s infinite;
-}
-
-.desk-status.error {
-  color: var(--danger);
-}
-
-.desk-status.error .status-dot {
-  background: var(--danger);
-  box-shadow: 0 0 0 4px rgba(217, 95, 107, 0.13);
-}
-
-.desk-toolbar .toolbar-button {
-  min-width: 34px;
-  min-height: 28px;
-  padding: 0 9px;
-  font-size: 14px;
-  letter-spacing: 2px;
-}
-
-.desk-menu {
-  position: fixed;
-  z-index: 9;
-  right: 16px;
-  bottom: 66px;
-  display: flex;
-  width: 168px;
-  flex-direction: column;
-  gap: 3px;
-  padding: 7px;
-  border: 1px solid var(--line);
-  border-radius: 12px;
-  background: rgba(255, 255, 255, 0.96);
-  box-shadow: var(--shadow);
-  -webkit-backdrop-filter: blur(18px);
-  backdrop-filter: blur(18px);
-}
-
-.menu-item {
-  justify-content: flex-start;
-  min-height: 31px;
-  padding: 0 10px;
-  color: #596781;
-  background: transparent;
-  font-size: 11px;
-  text-align: left;
-}
-
-.menu-item:hover:not(:disabled) {
-  color: var(--blue-deep);
-  background: rgba(75, 105, 237, 0.09);
-}
-
 .panel {
   position: fixed;
   z-index: 12;
@@ -644,8 +549,6 @@ button:disabled {
   }
 
   .startup-card,
-  .desk-toolbar,
-  .desk-menu,
   .panel,
   .secondary-button,
   .toolbar-button,

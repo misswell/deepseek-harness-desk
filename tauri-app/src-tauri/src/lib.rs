@@ -1148,6 +1148,7 @@ fn show_main_window<R: tauri::Runtime>(app: &AppHandle<R>) {
 #[cfg(feature = "tray-icon")]
 fn setup_tray<R: tauri::Runtime>(app: &mut tauri::App<R>) -> tauri::Result<()> {
     let show = MenuItem::with_id(app, "show", "打开窗口", true, None::<&str>)?;
+    let settings = MenuItem::with_id(app, "settings", "设置…", true, None::<&str>)?;
     let quit = MenuItem::with_id(
         app,
         "quit",
@@ -1155,15 +1156,26 @@ fn setup_tray<R: tauri::Runtime>(app: &mut tauri::App<R>) -> tauri::Result<()> {
         true,
         None::<&str>,
     )?;
-    let menu = MenuBuilder::new(app).items(&[&show, &quit]).build()?;
+    let menu = MenuBuilder::new(app)
+        .items(&[&show, &settings, &quit])
+        .build()?;
 
-    let mut tray = TrayIconBuilder::with_id("main-tray")
+    let icon = tauri::image::Image::from_bytes(include_bytes!(
+        "../../../Assets.xcassets/StatusBarIcon.imageset/statusbar_whale@2x.png"
+    ))?;
+
+    let tray = TrayIconBuilder::with_id("main-tray")
         .menu(&menu)
         .tooltip("DeepSeek Harness Desk")
+        .icon(icon)
         .icon_as_template(cfg!(target_os = "macos"))
         .show_menu_on_left_click(false)
         .on_menu_event(|app, event| match event.id().as_ref() {
             "show" => show_main_window(app),
+            "settings" => {
+                show_main_window(app);
+                let _ = app.emit("open-settings", ());
+            }
             "quit" => app.exit(0),
             _ => {}
         })
@@ -1177,9 +1189,6 @@ fn setup_tray<R: tauri::Runtime>(app: &mut tauri::App<R>) -> tauri::Result<()> {
             }
         });
 
-    if let Some(icon) = app.default_window_icon().cloned() {
-        tray = tray.icon(icon);
-    }
     tray.build(app)?;
     Ok(())
 }

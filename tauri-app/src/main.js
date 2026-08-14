@@ -19,15 +19,6 @@ const elements = {
   errorMessage: document.querySelector("#error-message"),
   retryButton: document.querySelector("#retry-button"),
   errorLogsButton: document.querySelector("#error-logs-button"),
-  deskStatus: document.querySelector("#desk-status"),
-  deskStatusText: document.querySelector("#desk-status-text"),
-  menuButton: document.querySelector("#menu-button"),
-  deskMenu: document.querySelector("#desk-menu"),
-  restartButton: document.querySelector("#restart-button"),
-  stopButton: document.querySelector("#stop-button"),
-  logsButton: document.querySelector("#logs-button"),
-  settingsButton: document.querySelector("#settings-button"),
-  refreshButton: document.querySelector("#refresh-button"),
   logsPanel: document.querySelector("#logs-panel"),
   logList: document.querySelector("#log-list"),
   clearLogsButton: document.querySelector("#clear-logs-button"),
@@ -81,8 +72,6 @@ function setBusy(busy) {
   const running = state.status?.running === true;
   elements.startButton.disabled = busy || running;
   elements.retryButton.disabled = busy || running;
-  elements.restartButton.disabled = busy || !running;
-  elements.stopButton.disabled = busy || !running;
   elements.runtimeInstallButton.disabled = busy || state.runtime?.installing === true;
   elements.startButton.textContent = busy ? "启动中…" : running ? "已启动" : "启动 Harness";
   elements.retryButton.textContent = busy ? "启动中…" : "重新启动";
@@ -132,10 +121,6 @@ function renderStatus() {
   const running = state.phase === "running" && state.status?.running === true;
   const failed = state.phase === "error";
 
-  elements.deskStatusText.textContent = copy.label;
-  elements.deskStatus.classList.toggle("running", running);
-  elements.deskStatus.classList.toggle("starting", state.phase === "starting");
-  elements.deskStatus.classList.toggle("error", failed);
   elements.startupView.classList.toggle("hidden", running || failed);
   elements.errorView.classList.toggle("hidden", !failed);
   elements.startupSpinner.classList.toggle("hidden", state.phase !== "starting");
@@ -192,13 +177,8 @@ function closePanels() {
 }
 
 function showPanel(panel) {
-  elements.deskMenu.classList.add("hidden");
   elements.logsPanel.classList.toggle("hidden", panel !== elements.logsPanel);
   elements.settingsPanel.classList.toggle("hidden", panel !== elements.settingsPanel);
-}
-
-function toggleMenu() {
-  elements.deskMenu.classList.toggle("hidden");
 }
 
 async function refreshRuntime() {
@@ -345,16 +325,6 @@ function bindEvents() {
   elements.retryButton.addEventListener("click", startHarness);
   elements.startupLogsButton.addEventListener("click", openLogs);
   elements.errorLogsButton.addEventListener("click", openLogs);
-  elements.menuButton.addEventListener("click", toggleMenu);
-  elements.restartButton.addEventListener("click", restartHarness);
-  elements.stopButton.addEventListener("click", stopHarness);
-  elements.logsButton.addEventListener("click", openLogs);
-  elements.settingsButton.addEventListener("click", () => showPanel(elements.settingsPanel));
-  elements.refreshButton.addEventListener("click", async () => {
-    elements.deskMenu.classList.add("hidden");
-    await Promise.all([refreshStatus(), refreshRuntime(), loadLogs()]);
-    setToast("状态已刷新");
-  });
   elements.clearLogsButton.addEventListener("click", async () => {
     await call("clear_harness_logs");
     state.logs = [];
@@ -371,11 +341,6 @@ function bindEvents() {
     elements.frameLoading.classList.remove("hidden");
   });
 
-  document.addEventListener("click", (event) => {
-    if (!elements.deskMenu.contains(event.target) && event.target !== elements.menuButton) {
-      elements.deskMenu.classList.add("hidden");
-    }
-  });
 }
 
 async function listenForOutput() {
@@ -396,6 +361,7 @@ async function listenForOutput() {
     }
     renderRuntime();
   });
+  await listen("open-settings", () => showPanel(elements.settingsPanel));
 }
 
 async function initialize() {
