@@ -42,5 +42,6 @@ struct MainView: View {
             }
         }
         .frame(minWidth: 900, minHeight: 600)
+        .ignoresSafeArea(.container, edges: .top)
     }
 }

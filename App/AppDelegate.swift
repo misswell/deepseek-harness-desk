@@ -17,8 +17,26 @@ struct WindowChromeConfigurator: NSViewRepresentable {
     }
 }
 
+/// A native strip attached directly to the window content view. Keeping this
+/// outside SwiftUI/WKWebView is important: WebKit otherwise consumes the
+/// mouse-down before AppKit can start a window drag.
+final class WindowDragOverlayView: NSView {
+    override func acceptsFirstMouse(for event: NSEvent?) -> Bool {
+        true
+    }
+
+    override func hitTest(_ point: NSPoint) -> NSView? {
+        bounds.contains(point) ? self : nil
+    }
+
+    override func mouseDown(with event: NSEvent) {
+        window?.performDrag(with: event)
+    }
+}
+
 final class WindowChromeView: NSView {
     private let isMainWindow: Bool
+    private var windowDragOverlay: WindowDragOverlayView?
 
     init(isMainWindow: Bool) {
         self.isMainWindow = isMainWindow
@@ -44,9 +62,11 @@ final class WindowChromeView: NSView {
 
         window.title = ""
         window.toolbar = nil
-        window.styleMask.remove(.titled)
-        window.styleMask.remove(.fullSizeContentView)
-        window.styleMask.insert(.resizable)
+        // Keep the native `.titled` mask so AppKit supplies adaptive rounded
+        // corners. Full-size content lets the WebView extend beneath the
+        // hidden title-bar area without turning the window into a borderless
+        // rectangle.
+        window.styleMask.insert(.fullSizeContentView)
         window.titleVisibility = .hidden
         window.titlebarAppearsTransparent = true
         window.titlebarSeparatorStyle = .none
@@ -58,6 +78,31 @@ final class WindowChromeView: NSView {
             window.standardWindowButton(buttonType)?.isHidden = true
         }
         window.isMovableByWindowBackground = true
+
+        if isMainWindow {
+            installWindowDragOverlay(in: window)
+        }
+    }
+
+    private func installWindowDragOverlay(in window: NSWindow) {
+        guard let contentView = window.contentView else { return }
+
+        let overlay = windowDragOverlay ?? WindowDragOverlayView()
+        windowDragOverlay = overlay
+        if overlay.superview !== contentView {
+            overlay.removeFromSuperview()
+            contentView.addSubview(overlay, positioned: .above, relativeTo: nil)
+        }
+
+        // NSView coordinates start at the bottom-left. Keep this strip pinned
+        // to the top edge while allowing it to follow window resizing.
+        overlay.autoresizingMask = [.width, .minYMargin]
+        overlay.frame = NSRect(
+            x: 0,
+            y: max(0, contentView.bounds.height - 36),
+            width: contentView.bounds.width,
+            height: min(36, contentView.bounds.height)
+        )
     }
 }
 
@@ -72,6 +117,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject {
     private var statusMenu: NSMenu?
     private weak var dockIconMenuItem: NSMenuItem?
     private var pendingWindowOpen = false
+    private var windowDragEventMonitor: Any?
 
     @Published private(set) var showsDockIcon: Bool
 
@@ -83,9 +129,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject {
         super.init()
     }
 
+    deinit {
+        if let windowDragEventMonitor {
+            NSEvent.removeMonitor(windowDragEventMonitor)
+        }
+    }
+
     func applicationDidFinishLaunching(_ notification: Notification) {
         configureStatusItem()
         applyDockIconPolicy()
+        installWindowDragEventMonitor()
     }
 
     func register(
@@ -99,6 +152,32 @@ final class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject {
     func register(mainWindow: NSWindow) {
         self.mainWindow = mainWindow
         mainWindow.isReleasedWhenClosed = false
+    }
+
+    private func installWindowDragEventMonitor() {
+        guard windowDragEventMonitor == nil else { return }
+
+        windowDragEventMonitor = NSEvent.addLocalMonitorForEvents(
+            matching: [.leftMouseDown]
+        ) { [weak self] event in
+            guard let self,
+                  let window = event.window,
+                  window === self.mainWindow,
+                  window.styleMask.contains(.titled),
+                  window.isMovable else {
+                return event
+            }
+
+            guard let contentView = window.contentView else { return event }
+            let point = contentView.convert(event.locationInWindow, from: nil)
+            let distanceFromTop = contentView.bounds.maxY - point.y
+            guard distanceFromTop >= 0, distanceFromTop <= 36 else {
+                return event
+            }
+
+            window.performDrag(with: event)
+            return nil
+        }
     }
 
     func setShowsDockIcon(_ visible: Bool) {
