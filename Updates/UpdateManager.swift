@@ -44,7 +44,7 @@ final class UpdateManager: ObservableObject {
     }
 
     static let releasesURL = URL(string: "https://api.github.com/repos/misswell/deepseek-harness-desk/releases/latest")!
-    static let currentVersion = Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "0.2.8"
+    static let currentVersion = Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "0.2.9"
 
     private static let metadataRequestTimeout: TimeInterval = 20
     private static let archiveDownloadTimeout: TimeInterval = 120

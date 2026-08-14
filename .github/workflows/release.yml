@@ -1,0 +1,83 @@
+name: Release macOS app
+
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: macos-15
+
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Import Developer ID signing certificate
+        uses: apple-actions/import-codesign-certs@v3
+        with:
+          p12-file-base64: ${{ secrets.APPLE_CERTIFICATE_P12 }}
+          p12-password: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+
+      - name: Archive Release build
+        run: |
+          xcodebuild archive \
+            -project DeepSeekHarnessDesk.xcodeproj \
+            -scheme DeepSeekHarnessDesk \
+            -configuration Release \
+            -archivePath build-release/DeepSeekHarnessDesk.xcarchive \
+            -destination "generic/platform=macOS" \
+            -derivedDataPath build-release/DerivedData
+
+      - name: Export Developer ID app
+        run: |
+          xcodebuild -exportArchive \
+            -archivePath build-release/DeepSeekHarnessDesk.xcarchive \
+            -exportPath build-release/export \
+            -exportOptionsPlist ExportOptions-DeveloperID.plist
+
+      - name: Create notarization archive
+        id: package
+        run: |
+          app="build-release/export/DeepSeek Harness Desk.app"
+          version="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "$app/Contents/Info.plist")"
+          zip="build-release/export/DeepSeekHarnessDesk-${version}-macOS-universal.zip"
+          ditto -c -k --sequesterRsrc --keepParent "$app" "$zip"
+          echo "app=$app" >> "$GITHUB_OUTPUT"
+          echo "zip=$zip" >> "$GITHUB_OUTPUT"
+
+      - name: Notarize and staple
+        env:
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_APP_SPECIFIC_PASSWORD: ${{ secrets.APPLE_APP_SPECIFIC_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+        run: |
+          xcrun notarytool submit "${{ steps.package.outputs.zip }}" \
+            --apple-id "$APPLE_ID" \
+            --password "$APPLE_APP_SPECIFIC_PASSWORD" \
+            --team-id "$APPLE_TEAM_ID" \
+            --wait
+          xcrun stapler staple "${{ steps.package.outputs.app }}"
+          xcrun stapler validate "${{ steps.package.outputs.app }}"
+          rm -f "${{ steps.package.outputs.zip }}"
+          ditto -c -k --sequesterRsrc --keepParent \
+            "${{ steps.package.outputs.app }}" \
+            "${{ steps.package.outputs.zip }}"
+
+      - name: Verify notarized app
+        run: |
+          codesign --verify --deep --strict "${{ steps.package.outputs.app }}"
+          spctl --assess --type execute --verbose=4 "${{ steps.package.outputs.app }}"
+
+      - name: Publish GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: >-
+          gh release create "${{ github.ref_name }}"
+          --title "DeepSeek Harness Desk ${{ github.ref_name }}"
+          --generate-notes
+          "${{ steps.package.outputs.zip }}#DeepSeek Harness Desk for macOS"

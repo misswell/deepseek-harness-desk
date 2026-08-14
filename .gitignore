@@ -8,6 +8,7 @@ xcuserdata/
 
 # Local signing and distribution output
 dist/
+build-release/
 *.xcarchive
 *.dmg
 *.pkg
