@@ -19,6 +19,14 @@ enum WebViewZoom {
 
 enum WebViewLoadRecovery {
     static let maxRetryCount = 3
+    // WebKit reports a navigation-policy cancellation as WKErrorDomain code 102;
+    // this legacy error is not exposed in the current public WKError.Code enum.
+    private static let expectedPolicyCancellationCode = 102
+
+    static func isExpectedPolicyCancellation(_ error: Error) -> Bool {
+        let nsError = error as NSError
+        return nsError.domain == WKErrorDomain && nsError.code == expectedPolicyCancellationCode
+    }
 
     static func shouldRetry(_ error: Error, attempt: Int) -> Bool {
         guard attempt < maxRetryCount else { return false }
@@ -128,7 +136,8 @@ final class WebViewController: NSObject, ObservableObject {
     }
 
     func navigationDidFail(with error: Error) {
-        guard (error as NSError).code != NSURLErrorCancelled,
+        guard !WebViewLoadRecovery.isExpectedPolicyCancellation(error),
+              (error as NSError).code != NSURLErrorCancelled,
               let pendingURL,
               let webView else {
             return

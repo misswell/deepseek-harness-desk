@@ -1,6 +1,7 @@
 import Foundation
 import Network
 import XCTest
+import WebKit
 @testable import DeepSeek_Harness_Desk
 
 final class DeepSeekHarnessDeskTests: XCTestCase {
@@ -104,6 +105,23 @@ final class DeepSeekHarnessDeskTests: XCTestCase {
         XCTAssertEqual(UpdateManager.AutomaticCheckInterval.hourly.seconds, 60 * 60)
         XCTAssertEqual(UpdateManager.AutomaticCheckInterval.daily.seconds, 24 * 60 * 60)
         XCTAssertEqual(UpdateManager.AutomaticCheckInterval.weekly.seconds, 7 * 24 * 60 * 60)
+    }
+
+    @MainActor
+    func testWebKitPolicyCancellationDoesNotShowLoadError() {
+        let controller = WebViewController()
+        let webView = WKWebView(frame: .zero)
+        controller.attach(webView)
+        controller.load(URL(string: "http://127.0.0.1:3080/")!)
+
+        let error = NSError(
+            domain: WKErrorDomain,
+            code: 102,
+            userInfo: [NSLocalizedDescriptionKey: "Frame load interrupted"]
+        )
+        controller.navigationDidFail(with: error)
+
+        XCTAssertNil(controller.loadErrorMessage)
     }
 
     func testWebViewRecoveryRetriesTransientNavigationFailuresWithinBound() {

@@ -83,8 +83,13 @@ struct HarnessWebView: NSViewRepresentable {
             if url.host == localHost || url.host == "127.0.0.1" || url.host == "localhost" {
                 decisionHandler(.allow)
             } else if url.scheme == "http" || url.scheme == "https" {
-                NSWorkspace.shared.open(url)
-                decisionHandler(.cancel)
+                if navigationAction.navigationType == .linkActivated,
+                   navigationAction.targetFrame?.isMainFrame != false {
+                    NSWorkspace.shared.open(url)
+                    decisionHandler(.cancel)
+                } else {
+                    decisionHandler(.allow)
+                }
             } else {
                 decisionHandler(.cancel)
             }
