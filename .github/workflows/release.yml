@@ -77,12 +77,32 @@ jobs:
           APPLE_ID: ${{ secrets.APPLE_ID }}
           APPLE_APP_SPECIFIC_PASSWORD: ${{ secrets.APPLE_APP_SPECIFIC_PASSWORD }}
           APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+          APPLE_API_KEY_ID: ${{ secrets.APPLE_API_KEY_ID }}
+          APPLE_API_ISSUER_ID: ${{ secrets.APPLE_API_ISSUER_ID }}
+          APPLE_API_PRIVATE_KEY: ${{ secrets.APPLE_API_PRIVATE_KEY }}
         run: |
-          xcrun notarytool submit "${{ steps.package.outputs.zip }}" \
-            --apple-id "$APPLE_ID" \
-            --password "$APPLE_APP_SPECIFIC_PASSWORD" \
-            --team-id "$APPLE_TEAM_ID" \
-            --wait
+          if [[ -n "${APPLE_API_KEY_ID:-}" || -n "${APPLE_API_ISSUER_ID:-}" || -n "${APPLE_API_PRIVATE_KEY:-}" ]]; then
+            : "${APPLE_API_KEY_ID:?APPLE_API_KEY_ID is required when using App Store Connect API key authentication}"
+            : "${APPLE_API_ISSUER_ID:?APPLE_API_ISSUER_ID is required when using App Store Connect API key authentication}"
+            : "${APPLE_API_PRIVATE_KEY:?APPLE_API_PRIVATE_KEY is required when using App Store Connect API key authentication}"
+            api_key="$RUNNER_TEMP/AuthKey_${APPLE_API_KEY_ID}.p8"
+            umask 077
+            printf '%s' "$APPLE_API_PRIVATE_KEY" > "$api_key"
+            xcrun notarytool submit "${{ steps.package.outputs.zip }}" \
+              --key "$api_key" \
+              --key-id "$APPLE_API_KEY_ID" \
+              --issuer "$APPLE_API_ISSUER_ID" \
+              --wait
+          else
+            : "${APPLE_ID:?Set APPLE_API_KEY_ID/APPLE_API_ISSUER_ID/APPLE_API_PRIVATE_KEY, or the legacy APPLE_ID/APPLE_APP_SPECIFIC_PASSWORD/APPLE_TEAM_ID secrets}"
+            : "${APPLE_APP_SPECIFIC_PASSWORD:?APPLE_APP_SPECIFIC_PASSWORD is required for legacy Apple ID authentication}"
+            : "${APPLE_TEAM_ID:?APPLE_TEAM_ID is required for legacy Apple ID authentication}"
+            xcrun notarytool submit "${{ steps.package.outputs.zip }}" \
+              --apple-id "$APPLE_ID" \
+              --password "$APPLE_APP_SPECIFIC_PASSWORD" \
+              --team-id "$APPLE_TEAM_ID" \
+              --wait
+          fi
           xcrun stapler staple "${{ steps.package.outputs.app }}"
           xcrun stapler validate "${{ steps.package.outputs.app }}"
           rm -f "${{ steps.package.outputs.zip }}"
