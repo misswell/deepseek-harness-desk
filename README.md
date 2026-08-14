@@ -1,29 +1,21 @@
 # DeepSeek Harness Desk
 
-原生 SwiftUI macOS 桌面客户端，用于启动并承载官方 DeepSeek Harness Web UI。
+当前桌面版正在迁移到 Tauri v2，入口位于 [`tauri-app`](/Users/guofeng/Code/solo/deepseek-harness-desk/tauri-app)。Tauri 版本使用单一固定窗口、原生拖动区域和系统托盘，解决旧 SwiftUI/AppKit 版本在 macOS 15 上遇到的重复窗口、顶栏拖动和隐藏后无法唤醒问题。
 
-当前版本：0.2.32
+## Tauri 版
 
-- 无需预装 Node.js 或 `dsh`：首次启动时可一键下载并安装受校验的 Managed Node.js 与 DeepSeek Harness Runtime
-- 自动选择 `3080–3099` 的本地端口
-- 等待 HTTP 健康检查通过后加载 `WKWebView`
-- 支持启动、停止、重启和有限次数的崩溃恢复
-- 捕获 Harness stdout/stderr，并写入 `~/Library/Logs/DeepSeek Harness Desk/`
-- 退出 App 时清理 Harness 进程树
-- 使用 DeepSeek Harness 原版蓝色鲸鱼 Logo
-- 主窗口内容延伸到最上边缘，保留 macOS 原生红黄绿窗口控制点；窗口仍可拖动、调整大小，使用 `⌘W` 关闭
-- 支持 `⌘+`、`⌘-` 和 `⌘0` 缩放界面，范围为 50%–200%，比例会持久化保存
-- 关闭主窗口后应用继续驻留 Dock，再次点击 Dock 图标会恢复窗口并重新加载 Harness 页面
-- 菜单栏常驻图标支持单击打开主窗口；设置中可关闭 Dock 图标，关闭后通过菜单栏图标继续使用
-- 强制退出后再次打开会自动清理上次遗留的 Harness 进程和端口，不会一直停留在“正在启动”
-- 更新下载具备超时、完整性、版本和签名校验；替换失败会自动回滚，不会留下损坏的 App
-- 更新检查支持每小时、每天或每周静默检查；App 和内置 Runtime 的下载过程显示阶段、进度和实时日志
-- 启动后分别检查 App 壳子和内置 `dsh`，发现新版本后默认自动安装；App 壳子会替换并重启，`dsh` 会重启 Harness 使新版本立即生效
+```bash
+cd tauri-app
+npm install
+npm run tauri dev
+```
 
-如果系统中已经安装 `dsh`，App 会优先使用它；否则在启动失败页点击“一键安装运行时”即可完成安装。Managed Runtime 安装在 `~/Library/Application Support/DeepSeek Harness Desk/runtime`，不会修改用户的 Shell 配置。
+需要 Node.js 18+、Rust 和 Cargo。发布构建使用 `npm run tauri build`，会生成 macOS、Windows 和 Linux 对应的安装包/可执行产物。当前 Tauri 版优先使用系统 `dsh`，也会兼容旧版 managed dsh；找不到时可通过 `DSH_BIN` 指定路径。
 
-更新包发布在本仓库的 GitHub Releases。设置菜单的“更新”页分别管理 App 壳子与内置 `dsh`：可以独立查看当前/最新版本、手动检查，并分别关闭自动检查或自动安装。公开发布包必须使用 Developer ID Application 证书签名并完成 Apple 公证；开发构建仍可使用 Apple Development 证书。安装更新前请将 App 放在可写位置（例如“应用程序”目录）。
+Tauri 版功能包括：启动、停止、重启 Harness；自动选择 `3080–3099` 端口；异步 HTTP 健康检查；stdout/stderr 日志；固定单窗口；透明自定义顶栏；菜单栏/系统托盘唤醒；Dock 图标开关；macOS、Windows、Linux 窗口控制。
 
-项目要求 macOS 14+，代码使用 Swift、SwiftUI、AppKit、WebKit 和 Foundation.Process，不 Fork 或修改 DeepSeek Harness 源码。
+## 旧版工程
+
+根目录的 `DeepSeekHarnessDesk.xcodeproj` 是迁移前的 SwiftUI macOS 工程，仅用于兼容旧版本和参考。它仍保留 managed Node.js、更新器等旧功能，Tauri 版的后续迁移会逐项补齐。
 
 DeepSeek Harness 由 DeepSeek AI 开发。DeepSeek Harness Desk 是独立的第三方项目，不隶属于 DeepSeek AI，也未获得其认可或赞助。

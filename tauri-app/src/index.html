@@ -1,0 +1,160 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="color-scheme" content="light dark" />
+    <title>DeepSeek Harness Desk</title>
+    <script type="module" src="/main.js" defer></script>
+  </head>
+  <body>
+    <div class="app-shell">
+      <header class="titlebar" data-tauri-drag-region>
+        <div class="brand" data-tauri-drag-region>
+          <div class="brand-mark" aria-hidden="true"><span>H</span></div>
+          <div class="brand-copy" data-tauri-drag-region>
+            <strong>DeepSeek Harness Desk</strong>
+            <span>本地 Harness 控制台</span>
+          </div>
+        </div>
+        <div class="titlebar-spacer" data-tauri-drag-region></div>
+        <div class="titlebar-status" id="titlebar-status">
+          <span class="status-dot"></span>
+          <span id="titlebar-status-text">未启动</span>
+        </div>
+        <div class="window-actions" aria-label="窗口控制">
+          <button class="window-button" id="minimize-button" title="最小化" aria-label="最小化">
+            <svg viewBox="0 0 16 16" aria-hidden="true"><path d="M3 8h10" /></svg>
+          </button>
+          <button class="window-button" id="maximize-button" title="最大化" aria-label="最大化">
+            <svg viewBox="0 0 16 16" aria-hidden="true"><rect x="3.5" y="3.5" width="9" height="9" rx="1" /></svg>
+          </button>
+          <button class="window-button close" id="hide-button" title="隐藏到菜单栏" aria-label="隐藏到菜单栏">
+            <svg viewBox="0 0 16 16" aria-hidden="true"><path d="M4 4l8 8M12 4l-8 8" /></svg>
+          </button>
+        </div>
+      </header>
+
+      <div class="app-body">
+        <aside class="sidebar">
+          <section class="control-card">
+            <div class="card-heading">
+              <span class="eyebrow">HARNESS</span>
+              <span class="live-indicator" id="side-live-indicator"></span>
+            </div>
+            <h1 id="side-status-title">准备启动</h1>
+            <p id="side-status-detail">点击启动，在本地打开 DeepSeek Harness。</p>
+            <div class="control-actions">
+              <button class="primary-button" id="start-button">
+                <span class="button-icon">▶</span>
+                启动 Harness
+              </button>
+              <button class="secondary-button" id="restart-button" disabled>重启</button>
+              <button class="ghost-button" id="stop-button" disabled>停止</button>
+            </div>
+          </section>
+
+          <section class="info-card">
+            <div class="info-row">
+              <span>服务地址</span>
+              <code id="port-value">—</code>
+            </div>
+            <div class="info-row">
+              <span>运行时</span>
+              <span class="runtime-value" id="runtime-value">检查中…</span>
+            </div>
+          </section>
+
+          <nav class="sidebar-nav" aria-label="工具">
+            <button class="nav-button active" id="harness-nav-button">
+              <span class="nav-icon">⌁</span>
+              Harness
+            </button>
+            <button class="nav-button" id="logs-button">
+              <span class="nav-icon">≡</span>
+              运行日志
+              <span class="nav-count" id="log-count">0</span>
+            </button>
+            <button class="nav-button" id="settings-button">
+              <span class="nav-icon">⚙</span>
+              设置
+            </button>
+          </nav>
+
+          <div class="sidebar-footer">
+            <span class="footer-mark">TAURI</span>
+            <span>跨平台桌面版</span>
+          </div>
+        </aside>
+
+        <main class="workspace">
+          <div class="workspace-toolbar">
+            <div>
+              <span class="workspace-kicker">LOCAL WORKSPACE</span>
+              <h2>DeepSeek Harness</h2>
+            </div>
+            <div class="workspace-toolbar-actions">
+              <button class="toolbar-button" id="refresh-button" title="刷新状态">刷新状态</button>
+              <button class="toolbar-button" id="open-logs-button">查看日志</button>
+            </div>
+          </div>
+
+          <section class="harness-stage" id="harness-stage">
+            <div class="empty-state" id="empty-state">
+              <div class="empty-orb"><span>H</span></div>
+              <h3 id="empty-title">Harness 尚未启动</h3>
+              <p id="empty-message">启动后，这里会承载本机的 Harness Web UI。</p>
+              <button class="primary-button compact" id="empty-start-button">启动 Harness</button>
+            </div>
+            <div class="frame-container hidden" id="frame-container">
+              <div class="frame-loading" id="frame-loading">正在加载 Harness 页面…</div>
+              <iframe id="harness-frame" title="DeepSeek Harness Web UI" allow="clipboard-read; clipboard-write"></iframe>
+            </div>
+          </section>
+
+          <section class="drawer hidden" id="logs-drawer" aria-label="运行日志">
+            <div class="drawer-heading">
+              <div>
+                <span class="workspace-kicker">PROCESS OUTPUT</span>
+                <h3>运行日志</h3>
+              </div>
+              <div class="drawer-actions">
+                <button class="toolbar-button" id="clear-logs-button">清空</button>
+                <button class="icon-button" id="close-logs-button" title="关闭日志">×</button>
+              </div>
+            </div>
+            <div class="log-list" id="log-list"></div>
+          </section>
+
+          <section class="drawer settings-drawer hidden" id="settings-drawer" aria-label="设置">
+            <div class="drawer-heading">
+              <div>
+                <span class="workspace-kicker">PREFERENCES</span>
+                <h3>设置</h3>
+              </div>
+              <button class="icon-button" id="close-settings-button" title="关闭设置">×</button>
+            </div>
+            <div class="settings-list">
+              <label class="setting-row">
+                <span>
+                  <strong>在 Dock 中显示图标</strong>
+                  <small>关闭后仍可从菜单栏图标唤醒窗口。</small>
+                </span>
+                <input type="checkbox" id="dock-icon-toggle" />
+              </label>
+              <div class="setting-row stacked">
+                <span><strong>dsh 可执行文件</strong><small id="settings-runtime-path">检查中…</small></span>
+                <button class="toolbar-button" id="refresh-runtime-button">重新检查</button>
+              </div>
+              <div class="setting-note">
+                如果系统找不到 dsh，可安装 <code>@deepseek-ai/dsh</code>，或通过 <code>DSH_BIN</code> 指定可执行文件路径。
+              </div>
+            </div>
+          </section>
+        </main>
+      </div>
+    </div>
+
+    <div class="toast hidden" id="toast" role="status"></div>
+  </body>
+</html>
