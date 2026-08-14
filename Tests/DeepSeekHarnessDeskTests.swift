@@ -237,36 +237,77 @@ final class DeepSeekHarnessDeskTests: XCTestCase {
 
     @MainActor
     func testWindowChromeInstallsDraggableTopStripAboveContent() {
-        let contentView = NSView(frame: NSRect(x: 0, y: 0, width: 900, height: 600))
-        let window = NSWindow(
-            contentRect: contentView.frame,
-            styleMask: [.titled, .closable, .resizable],
-            backing: .buffered,
-            defer: false
+        // The real window content view is a flipped NSHostingView; a plain
+        // AppKit content view uses bottom-left origin. Both must end up with
+        // the strip at the top of the window.
+        let contentViews: [NSView] = [
+            NSView(frame: NSRect(x: 0, y: 0, width: 900, height: 600)),
+            FlippedView(frame: NSRect(x: 0, y: 0, width: 900, height: 600)),
+        ]
+
+        for contentView in contentViews {
+            let window = NSWindow(
+                contentRect: contentView.frame,
+                styleMask: [.titled, .closable, .resizable],
+                backing: .buffered,
+                defer: false
+            )
+            window.contentView = contentView
+
+            let chrome = WindowChromeView(isMainWindow: false)
+            chrome.frame = contentView.bounds
+            chrome.autoresizingMask = [.width, .height]
+            contentView.addSubview(chrome)
+            chrome.configureWindow()
+
+            let overlays = contentView.subviews.compactMap { $0 as? WindowDragOverlayView }
+            XCTAssertEqual(overlays.count, 1)
+            XCTAssertTrue(overlays[0].mouseDownCanMoveWindow)
+            XCTAssertEqual(overlays[0].frame.minX, 92, accuracy: 1)
+            XCTAssertEqual(
+                overlays[0].frame.minY,
+                WindowDragStrip.frame(in: contentView).minY,
+                accuracy: 1,
+                "Strip must hug the top edge whether the content view is flipped or not."
+            )
+            XCTAssertEqual(overlays[0].frame.height, 44, accuracy: 1)
+            XCTAssertTrue(contentView.subviews.last === overlays[0])
+            XCTAssertTrue(window.styleMask.contains(.fullSizeContentView))
+            XCTAssertTrue(window.titlebarAppearsTransparent)
+            XCTAssertFalse(window.isOpaque)
+            XCTAssertEqual(window.backgroundColor, .clear)
+
+            let webView = NSView(frame: contentView.bounds)
+            contentView.addSubview(webView)
+            chrome.layout()
+            XCTAssertTrue(contentView.subviews.last === overlays[0])
+        }
+    }
+
+    @MainActor
+    func testWindowDragStripGeometryHonorsFlippedContentView() {
+        let plain = NSView(frame: NSRect(x: 0, y: 0, width: 900, height: 600))
+        let flipped = FlippedView(frame: NSRect(x: 0, y: 0, width: 900, height: 600))
+
+        // The frame must sit at the very top in both coordinate systems.
+        XCTAssertEqual(WindowDragStrip.frame(in: plain).minY, plain.bounds.maxY - 44, accuracy: 0.001)
+        XCTAssertEqual(WindowDragStrip.frame(in: flipped).minY, 0, accuracy: 0.001)
+        XCTAssertEqual(WindowDragStrip.frame(in: flipped).width, 900 - 92, accuracy: 0.001)
+        XCTAssertEqual(WindowDragStrip.frame(in: flipped).height, 44, accuracy: 0.001)
+
+        // Near the top → inside the strip; near the bottom → outside; the
+        // traffic-light region → outside.
+        XCTAssertTrue(WindowDragStrip.contains(point: NSPoint(x: 500, y: 10), in: flipped))
+        XCTAssertFalse(WindowDragStrip.contains(point: NSPoint(x: 500, y: 500), in: flipped))
+        XCTAssertFalse(WindowDragStrip.contains(point: NSPoint(x: 40, y: 10), in: flipped))
+
+        XCTAssertTrue(
+            WindowDragStrip.contains(point: NSPoint(x: 500, y: plain.bounds.maxY - 10), in: plain)
         )
-        window.contentView = contentView
-
-        let chrome = WindowChromeView(isMainWindow: false)
-        chrome.frame = contentView.bounds
-        chrome.autoresizingMask = [.width, .height]
-        contentView.addSubview(chrome)
-        chrome.configureWindow()
-
-        let overlays = contentView.subviews.compactMap { $0 as? WindowDragOverlayView }
-        XCTAssertEqual(overlays.count, 1)
-        XCTAssertTrue(overlays[0].mouseDownCanMoveWindow)
-        XCTAssertEqual(overlays[0].frame.minX, 92, accuracy: 1)
-        XCTAssertEqual(overlays[0].frame.minY, contentView.bounds.maxY - 44, accuracy: 1)
-        XCTAssertTrue(contentView.subviews.last === overlays[0])
-        XCTAssertTrue(window.styleMask.contains(.fullSizeContentView))
-        XCTAssertTrue(window.titlebarAppearsTransparent)
-        XCTAssertFalse(window.isOpaque)
-        XCTAssertEqual(window.backgroundColor, .clear)
-
-        let webView = NSView(frame: contentView.bounds)
-        contentView.addSubview(webView)
-        chrome.layout()
-        XCTAssertTrue(contentView.subviews.last === overlays[0])
+        XCTAssertFalse(WindowDragStrip.contains(point: NSPoint(x: 500, y: 100), in: plain))
+        XCTAssertFalse(
+            WindowDragStrip.contains(point: NSPoint(x: 40, y: plain.bounds.maxY - 10), in: plain)
+        )
     }
 
     @MainActor
@@ -461,6 +502,10 @@ final class DeepSeekHarnessDeskTests: XCTestCase {
         )
         XCTAssertFalse(process.isRunning)
     }
+}
+
+private final class FlippedView: NSView {
+    override var isFlipped: Bool { true }
 }
 
 private final class LocalHTTPServer {

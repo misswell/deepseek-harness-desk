@@ -8,6 +8,43 @@ fileprivate enum WindowChromeMetrics {
     static let trafficLightReservedWidth: CGFloat = 92
 }
 
+/// Geometry for the window's top drag strip.
+///
+/// The window content view of a SwiftUI scene is a flipped `NSHostingView`
+/// (origin at the top-left, y grows downward), while a plain AppKit content
+/// view measures from the bottom-left. All strip math must honor `isFlipped`,
+/// otherwise the strip ends up at the bottom of the window.
+enum WindowDragStrip {
+    static func frame(in contentView: NSView) -> NSRect {
+        let y = contentView.isFlipped
+            ? 0
+            : contentView.bounds.maxY - WindowChromeMetrics.titlebarHeight
+        return NSRect(
+            x: WindowChromeMetrics.trafficLightReservedWidth,
+            y: y,
+            width: max(0, contentView.bounds.width - WindowChromeMetrics.trafficLightReservedWidth),
+            height: min(WindowChromeMetrics.titlebarHeight, contentView.bounds.height)
+        )
+    }
+
+    /// Whether a point (already in the content view's coordinate space) lies
+    /// inside the drag strip.
+    static func contains(point: NSPoint, in contentView: NSView) -> Bool {
+        let distanceFromTop = contentView.isFlipped
+            ? point.y
+            : contentView.bounds.maxY - point.y
+        return distanceFromTop >= 0 &&
+            distanceFromTop <= WindowChromeMetrics.titlebarHeight &&
+            point.x >= WindowChromeMetrics.trafficLightReservedWidth
+    }
+
+    /// Keeps the strip pinned to the top edge as the window resizes: the
+    /// margin opposite the pinned edge flexes.
+    static func autoresizingMask(for contentView: NSView) -> NSView.AutoresizingMask {
+        contentView.isFlipped ? [.width, .maxYMargin] : [.width, .minYMargin]
+    }
+}
+
 struct WindowChromeConfigurator: NSViewRepresentable {
     let isMainWindow: Bool
 
@@ -37,14 +74,9 @@ final class WindowDragOverlayView: NSView {
     }
 
     override func hitTest(_ point: NSPoint) -> NSView? {
-        guard bounds.contains(point) else { return nil }
-
-        // Never steal the traffic-light buttons. The reserved region is the
-        // leading 92pt where close/minimize/zoom live.
-        if point.x < WindowChromeMetrics.trafficLightReservedWidth {
-            return nil
-        }
-        return self
+        // The frame already leaves the leading traffic-light region free, so
+        // simply answering for the whole strip never steals those buttons.
+        bounds.contains(point) ? self : nil
     }
 
     override func mouseDown(with event: NSEvent) {
@@ -149,15 +181,11 @@ final class WindowChromeView: NSView {
         guard let contentView = window?.contentView,
               let overlay = windowDragOverlay else { return }
 
-        // NSView coordinates start at the bottom-left. Keep this strip pinned
-        // to the top edge while allowing it to follow window resizing.
-        overlay.autoresizingMask = [.width, .minYMargin]
-        overlay.frame = NSRect(
-            x: WindowChromeMetrics.trafficLightReservedWidth,
-            y: max(0, contentView.bounds.height - WindowChromeMetrics.titlebarHeight),
-            width: max(0, contentView.bounds.width - WindowChromeMetrics.trafficLightReservedWidth),
-            height: min(WindowChromeMetrics.titlebarHeight, contentView.bounds.height)
-        )
+        // Pin the strip to the top edge while letting it follow window
+        // resizing. The window content view is a flipped NSHostingView in the
+        // real app, so the top edge is y = 0 there.
+        overlay.autoresizingMask = WindowDragStrip.autoresizingMask(for: contentView)
+        overlay.frame = WindowDragStrip.frame(in: contentView)
     }
 }
 
@@ -328,6 +356,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, Obse
                 return nil
             }
 
+            // Prefer the overlay's native drag path when it is the topmost
+            // subview: `mouseDownCanMoveWindow` lets AppKit own the gesture.
+            // Fall back to performDrag only when a WebKit/SwiftUI view sits
+            // above the strip and would otherwise swallow the click.
+            if let contentView = window.contentView,
+               contentView.subviews.last is WindowDragOverlayView {
+                return event
+            }
+
             window.performDrag(with: event)
             return nil
         }
@@ -340,10 +377,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, Obse
         }
 
         let point = contentView.convert(event.locationInWindow, from: nil)
-        let distanceFromTop = contentView.bounds.maxY - point.y
-        return distanceFromTop >= 0 &&
-            distanceFromTop <= WindowChromeMetrics.titlebarHeight &&
-            point.x >= WindowChromeMetrics.trafficLightReservedWidth
+        return WindowDragStrip.contains(point: point, in: contentView)
     }
 
     func setShowsDockIcon(_ visible: Bool) {
