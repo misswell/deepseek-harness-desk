@@ -204,7 +204,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, Obse
     private weak var dockIconMenuItem: NSMenuItem?
     private var windowDragEventMonitor: Any?
     private let terminationCoordinator = ApplicationTerminationCoordinator()
-    private var terminatingForUpdate = false
+    private static var terminatingForUpdate = false
 
     @Published private(set) var showsDockIcon: Bool
 
@@ -261,8 +261,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, Obse
     /// Harness immediately and let `applicationShouldTerminate` answer
     /// `.terminateNow`.
     func prepareForUpdateTermination() {
-        terminatingForUpdate = true
+        Self.terminatingForUpdate = true
         harnessManager?.forceStopImmediately()
+    }
+
+    /// Static entry point used by the updater so it does not depend on the
+    /// runtime delegate cast succeeding.
+    static func requestUpdateTermination() {
+        terminatingForUpdate = true
+    }
+
+    static func resetUpdateTerminationForTesting() {
+        terminatingForUpdate = false
     }
 
     private func installWindowDragEventMonitor() {
@@ -334,7 +344,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, Obse
     }
 
     func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
-        if terminatingForUpdate {
+        if Self.terminatingForUpdate {
+            harnessManager?.forceStopImmediately()
             return .terminateNow
         }
         return terminationCoordinator.requestTermination(

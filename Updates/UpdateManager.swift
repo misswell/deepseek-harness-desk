@@ -68,7 +68,7 @@ final class UpdateManager: ObservableObject {
     }
 
     static let releasesURL = URL(string: "https://api.github.com/repos/misswell/deepseek-harness-desk/releases/latest")!
-    static let currentVersion = Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "0.2.22"
+    static let currentVersion = Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "0.2.23"
 
     private static let metadataRequestTimeout: TimeInterval = 20
     private static let archiveDownloadTimeout: TimeInterval = 120
@@ -331,7 +331,7 @@ final class UpdateManager: ObservableObject {
             appendInstallLog("替换程序已启动，App 即将重启")
             status = automatically ? "更新完成，App 即将重启" : "更新已准备，App 即将重启"
             availableRelease = nil
-            (NSApp.delegate as? AppDelegate)?.prepareForUpdateTermination()
+            AppDelegate.requestUpdateTermination()
             NSApp.terminate(nil)
         } catch is CancellationError {
             setInstallStep("更新下载已取消")

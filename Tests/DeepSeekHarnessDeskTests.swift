@@ -160,6 +160,7 @@ final class DeepSeekHarnessDeskTests: XCTestCase {
             .terminateNow,
             "Update replacement must not wait for the graceful termination reply."
         )
+        AppDelegate.resetUpdateTerminationForTesting()
     }
 
     @MainActor
