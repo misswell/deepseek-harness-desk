@@ -416,8 +416,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, Obse
         }
 
         let shouldReload = forceReload || !window.isVisible
-        activateApplication()
-        bringWindowToFront(window)
+        activateAndBringWindowToFront(window)
         webViewController?.restore(
             url: harnessManager?.serverURL,
             forceReload: shouldReload
@@ -537,20 +536,37 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, Obse
         NSApp.activate(ignoringOtherApps: true)
     }
 
+    /// Brings the main window forward and makes the app the active app.
+    ///
+    /// Ordering matters in `.accessory` (Dock icon hidden) mode: AppKit can
+    /// ignore `NSApp.activate` for a menu-bar app unless the window is already
+    /// visible. Show and order the window first, then activate the running
+    /// app with the same options Dock clicks use, then make the window key.
+    private func activateAndBringWindowToFront(_ window: NSWindow) {
+        if window.isMiniaturized {
+            window.deminiaturize(nil)
+        }
+        window.orderFrontRegardless()
+
+        NSApp.unhide(nil)
+        NSApp.activate(ignoringOtherApps: true)
+
+        if NSApp.activationPolicy() == .accessory {
+            NSRunningApplication.current.activate(
+                options: [.activateAllWindows, .activateIgnoringOtherApps]
+            )
+        }
+
+        window.makeKeyAndOrderFront(nil)
+        window.orderFrontRegardless()
+    }
+
     private func restoreWindowAfterActivationPolicyChange(preferred: NSWindow?) {
         let window = [preferred, mainWindow]
             .compactMap { $0 }
             .first { NSApp.windows.contains($0) }
         guard let window else { return }
-        bringWindowToFront(window)
-    }
-
-    private func bringWindowToFront(_ window: NSWindow) {
-        if window.isMiniaturized {
-            window.deminiaturize(nil)
-        }
-        window.orderFrontRegardless()
-        window.makeKeyAndOrderFront(nil)
+        activateAndBringWindowToFront(window)
     }
 
     private func updateStatusMenuState() {

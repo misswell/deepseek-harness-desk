@@ -214,6 +214,28 @@ final class DeepSeekHarnessDeskTests: XCTestCase {
     }
 
     @MainActor
+    func testOpenMainWindowRestoresHiddenOrMiniaturizedWindowToFront() {
+        let delegate = AppDelegate()
+        let window = NSWindow(
+            contentRect: NSRect(x: 0, y: 0, width: 400, height: 300),
+            styleMask: [.titled, .closable, .miniaturizable],
+            backing: .buffered,
+            defer: false
+        )
+        delegate.register(mainWindow: window)
+        window.orderOut(nil)
+
+        delegate.openMainWindow(forceReload: false)
+
+        XCTAssertTrue(window.isVisible, "Status-bar/Dock click must restore a hidden main window.")
+        XCTAssertFalse(window.isMiniaturized, "Restored window must not stay miniaturized.")
+        XCTAssertTrue(
+            NSApp.windows.firstIndex(of: window) ?? .max < NSApp.windows.count,
+            "Main window must be back in the app's window list."
+        )
+    }
+
+    @MainActor
     func testWindowChromeInstallsDraggableTopStripAboveContent() {
         let contentView = NSView(frame: NSRect(x: 0, y: 0, width: 900, height: 600))
         let window = NSWindow(
