@@ -689,7 +689,7 @@ dependencies = [
 
 [[package]]
 name = "deepseek-harness-desk"
-version = "0.3.2"
+version = "0.3.3"
 dependencies = [
  "objc2",
  "objc2-app-kit",
