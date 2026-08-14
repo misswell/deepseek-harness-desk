@@ -201,6 +201,31 @@ fn dsh_candidates(app: Option<&AppHandle>) -> Vec<PathBuf> {
     #[cfg(not(windows))]
     let names = vec!["dsh".to_string()];
 
+    // Reuse both the runtime created by the old Swift client and the Tauri
+    // app-data runtime created by the first-run installer. These must be
+    // checked before PATH so an old system dsh cannot run with an old Node.
+    for runtime_root in runtime_roots(app) {
+        let runtime_dsh = runtime_root.join("dsh");
+        for name in &names {
+            push_unique(&mut candidates, runtime_dsh.join(name));
+        }
+
+        if let Ok(versions) = std::fs::read_dir(&runtime_dsh) {
+            for version in versions.flatten() {
+                let version_dir = version.path();
+                if !version_dir.is_dir() {
+                    continue;
+                }
+                for name in &names {
+                    push_unique(
+                        &mut candidates,
+                        version_dir.join("node_modules/.bin").join(name),
+                    );
+                }
+            }
+        }
+    }
+
     let mut search_directories = Vec::new();
     if let Some(path) = env::var_os("PATH") {
         search_directories.extend(env::split_paths(&path));
@@ -234,30 +259,6 @@ fn dsh_candidates(app: Option<&AppHandle>) -> Vec<PathBuf> {
     for directory in search_directories {
         for name in &names {
             push_unique(&mut candidates, directory.join(name));
-        }
-    }
-
-    // Reuse both the runtime created by the old Swift client and the Tauri
-    // app-data runtime created by the first-run installer.
-    for runtime_root in runtime_roots(app) {
-        let runtime_dsh = runtime_root.join("dsh");
-        for name in &names {
-            push_unique(&mut candidates, runtime_dsh.join(name));
-        }
-
-        if let Ok(versions) = std::fs::read_dir(&runtime_dsh) {
-            for version in versions.flatten() {
-                let version_dir = version.path();
-                if !version_dir.is_dir() {
-                    continue;
-                }
-                for name in &names {
-                    push_unique(
-                        &mut candidates,
-                        version_dir.join("node_modules/.bin").join(name),
-                    );
-                }
-            }
         }
     }
 
@@ -296,6 +297,7 @@ fn process_path(program: &Path, app: &AppHandle) -> String {
     if let Some(parent) = program.parent() {
         paths.push(parent.to_path_buf());
     }
+    paths.extend(managed_node_bin_directories(Some(app)));
     if let Some(path) = env::var_os("PATH") {
         paths.extend(env::split_paths(&path));
     }
@@ -306,7 +308,6 @@ fn process_path(program: &Path, app: &AppHandle) -> String {
             home.join("Library/pnpm"),
         ]);
     }
-    paths.extend(managed_node_bin_directories(Some(app)));
     #[cfg(unix)]
     paths.extend([
         PathBuf::from("/opt/homebrew/bin"),

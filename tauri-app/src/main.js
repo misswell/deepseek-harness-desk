@@ -3,44 +3,42 @@ const invoke = tauri?.core?.invoke;
 const listen = tauri?.event?.listen;
 
 const elements = {
-  titlebarStatus: document.querySelector("#titlebar-status"),
-  titlebarStatusText: document.querySelector("#titlebar-status-text"),
-  sideLiveIndicator: document.querySelector("#side-live-indicator"),
-  sideStatusTitle: document.querySelector("#side-status-title"),
-  sideStatusDetail: document.querySelector("#side-status-detail"),
-  portValue: document.querySelector("#port-value"),
-  runtimeValue: document.querySelector("#runtime-value"),
-  settingsRuntimePath: document.querySelector("#settings-runtime-path"),
-  runtimeInstallButton: document.querySelector("#runtime-install-button"),
-  runtimeInstallStatus: document.querySelector("#runtime-install-status"),
-  startButton: document.querySelector("#start-button"),
-  startButtonLabel: document.querySelector("#start-button-label"),
-  restartButton: document.querySelector("#restart-button"),
-  stopButton: document.querySelector("#stop-button"),
-  emptyStartButton: document.querySelector("#empty-start-button"),
-  emptyStartButtonLabel: document.querySelector("#empty-start-button-label"),
-  emptyTitle: document.querySelector("#empty-title"),
-  emptyMessage: document.querySelector("#empty-message"),
-  emptyState: document.querySelector("#empty-state"),
   frameContainer: document.querySelector("#frame-container"),
   frameLoading: document.querySelector("#frame-loading"),
   frame: document.querySelector("#harness-frame"),
+  startupView: document.querySelector("#startup-view"),
+  startupSpinner: document.querySelector("#startup-spinner"),
+  startupTitle: document.querySelector("#startup-title"),
+  startupMessage: document.querySelector("#startup-message"),
+  runtimeStatus: document.querySelector("#runtime-status"),
+  harnessStatus: document.querySelector("#harness-status"),
+  portStatus: document.querySelector("#port-status"),
+  startButton: document.querySelector("#start-button"),
+  startupLogsButton: document.querySelector("#startup-logs-button"),
+  errorView: document.querySelector("#error-view"),
+  errorMessage: document.querySelector("#error-message"),
+  retryButton: document.querySelector("#retry-button"),
+  errorLogsButton: document.querySelector("#error-logs-button"),
+  deskStatus: document.querySelector("#desk-status"),
+  deskStatusText: document.querySelector("#desk-status-text"),
+  menuButton: document.querySelector("#menu-button"),
+  deskMenu: document.querySelector("#desk-menu"),
+  restartButton: document.querySelector("#restart-button"),
+  stopButton: document.querySelector("#stop-button"),
   logsButton: document.querySelector("#logs-button"),
-  openLogsButton: document.querySelector("#open-logs-button"),
-  logCount: document.querySelector("#log-count"),
-  logsDrawer: document.querySelector("#logs-drawer"),
+  settingsButton: document.querySelector("#settings-button"),
+  refreshButton: document.querySelector("#refresh-button"),
+  logsPanel: document.querySelector("#logs-panel"),
   logList: document.querySelector("#log-list"),
   clearLogsButton: document.querySelector("#clear-logs-button"),
   closeLogsButton: document.querySelector("#close-logs-button"),
-  settingsButton: document.querySelector("#settings-button"),
-  settingsDrawer: document.querySelector("#settings-drawer"),
+  settingsPanel: document.querySelector("#settings-panel"),
   closeSettingsButton: document.querySelector("#close-settings-button"),
   dockIconToggle: document.querySelector("#dock-icon-toggle"),
+  settingsRuntimePath: document.querySelector("#settings-runtime-path"),
+  runtimeInstallStatus: document.querySelector("#runtime-install-status"),
+  runtimeInstallButton: document.querySelector("#runtime-install-button"),
   refreshRuntimeButton: document.querySelector("#refresh-runtime-button"),
-  refreshButton: document.querySelector("#refresh-button"),
-  minimizeButton: document.querySelector("#minimize-button"),
-  maximizeButton: document.querySelector("#maximize-button"),
-  hideButton: document.querySelector("#hide-button"),
   toast: document.querySelector("#toast"),
 };
 
@@ -52,7 +50,6 @@ const state = {
   busy: false,
   frameUrl: "",
   toastTimer: null,
-  runtimeProgress: "",
 };
 
 function errorMessage(error) {
@@ -66,24 +63,8 @@ function errorMessage(error) {
 }
 
 async function call(command, args) {
-  if (!invoke) {
-    throw new Error("当前页面不是 Tauri 应用窗口");
-  }
+  if (!invoke) throw new Error("当前页面不是 Tauri 应用窗口");
   return invoke(command, args);
-}
-
-function setBusy(busy) {
-  state.busy = busy;
-  elements.startButton.disabled = busy || state.phase === "running";
-  elements.emptyStartButton.disabled = busy || state.phase === "running";
-  elements.runtimeInstallButton.disabled = busy || state.runtime?.installing === true;
-  elements.restartButton.disabled = busy || !state.status?.running;
-  elements.stopButton.disabled = busy || !state.status?.running;
-  elements.startButton.classList.toggle("loading", busy);
-  elements.startButton.querySelector(".button-icon").textContent = busy ? "◌" : "▶";
-  const installLabel = state.runtime && !state.runtime.available ? "安装并启动" : "启动 Harness";
-  elements.startButtonLabel.textContent = installLabel;
-  elements.emptyStartButtonLabel.textContent = installLabel;
 }
 
 function setToast(message, isError = false) {
@@ -95,44 +76,80 @@ function setToast(message, isError = false) {
   state.toastTimer = setTimeout(() => elements.toast.classList.add("hidden"), 3800);
 }
 
-function statusCopy() {
+function setBusy(busy) {
+  state.busy = busy;
+  const running = state.status?.running === true;
+  elements.startButton.disabled = busy || running;
+  elements.retryButton.disabled = busy || running;
+  elements.restartButton.disabled = busy || !running;
+  elements.stopButton.disabled = busy || !running;
+  elements.runtimeInstallButton.disabled = busy || state.runtime?.installing === true;
+  elements.startButton.textContent = busy ? "启动中…" : running ? "已启动" : "启动 Harness";
+  elements.retryButton.textContent = busy ? "启动中…" : "重新启动";
+}
+
+function phaseCopy() {
   if (state.phase === "starting") {
-    return { label: "启动中", title: "正在启动", detail: "正在等待本地 Harness 服务就绪…" };
-  }
-  if (state.phase === "running") {
     return {
-      label: "运行中",
-      title: "Harness 运行中",
-      detail: state.status?.port ? `本地端口 ${state.status.port} · 页面已就绪` : "本地页面已就绪",
+      label: "启动中",
+      title: "正在启动 DeepSeek Harness…",
+      message: "正在准备本机运行环境，请稍候。",
     };
   }
-  if (state.phase === "error") {
-    return { label: "启动失败", title: "无法启动 Harness", detail: state.status?.error || "请查看运行日志。" };
+  if (state.phase === "running") {
+    return { label: "运行中", title: "Harness 已启动", message: "" };
   }
-  return { label: "未启动", title: "准备启动", detail: "点击启动，在本地打开 DeepSeek Harness。" };
+  if (state.phase === "error") {
+    return { label: "启动失败", title: "DeepSeek Harness 无法启动", message: "" };
+  }
+  return { label: "已停止", title: "DeepSeek Harness 已停止", message: "点击启动按钮重新打开 Harness。" };
+}
+
+function renderRuntime() {
+  const runtime = state.runtime;
+  if (!runtime) return;
+
+  const label = runtime.installing
+    ? "安装中…"
+    : runtime.available
+      ? "内置 Node + dsh"
+      : "待安装";
+  elements.runtimeStatus.textContent = label;
+  elements.runtimeStatus.classList.toggle("available", runtime.available && !runtime.installing);
+  elements.runtimeStatus.classList.toggle("missing", !runtime.available && !runtime.installing);
+  elements.settingsRuntimePath.textContent =
+    runtime.path || runtime.message || "首次启动会自动安装 Node.js 和 dsh。";
+  elements.runtimeInstallStatus.textContent =
+    runtime.message || (runtime.available ? "运行时已就绪。" : "点击安装，应用会自动准备运行环境。");
+  elements.runtimeInstallButton.classList.toggle("hidden", runtime.available && !runtime.installing);
+  elements.runtimeInstallButton.textContent = runtime.installing ? "安装中…" : "安装运行时";
+  elements.runtimeInstallStatus.classList.toggle("active", runtime.installing);
+  setBusy(state.busy);
 }
 
 function renderStatus() {
-  const copy = statusCopy();
-  elements.titlebarStatusText.textContent = copy.label;
-  elements.titlebarStatus.classList.toggle("running", state.phase === "running");
-  elements.titlebarStatus.classList.toggle("starting", state.phase === "starting");
-  elements.titlebarStatus.classList.toggle("error", state.phase === "error");
-  elements.sideLiveIndicator.classList.toggle("running", state.phase === "running");
-  elements.sideLiveIndicator.classList.toggle("starting", state.phase === "starting");
-  elements.sideLiveIndicator.classList.toggle("error", state.phase === "error");
-  elements.sideStatusTitle.textContent = copy.title;
-  elements.sideStatusDetail.textContent = copy.detail;
-  elements.portValue.textContent = state.status?.port ? `127.0.0.1:${state.status.port}` : "—";
-  elements.emptyTitle.textContent = state.phase === "error" ? "Harness 启动失败" : "Harness 尚未启动";
-  elements.emptyMessage.textContent =
-    state.phase === "error"
-      ? state.status?.error || "请打开运行日志检查 dsh 输出。"
-      : "启动后，这里会承载本机的 Harness Web UI。";
+  const copy = phaseCopy();
+  const running = state.phase === "running" && state.status?.running === true;
+  const failed = state.phase === "error";
 
-  const running = state.phase === "running";
-  elements.emptyState.classList.toggle("hidden", running);
+  elements.deskStatusText.textContent = copy.label;
+  elements.deskStatus.classList.toggle("running", running);
+  elements.deskStatus.classList.toggle("starting", state.phase === "starting");
+  elements.deskStatus.classList.toggle("error", failed);
+  elements.startupView.classList.toggle("hidden", running || failed);
+  elements.errorView.classList.toggle("hidden", !failed);
+  elements.startupSpinner.classList.toggle("hidden", state.phase !== "starting");
+  elements.startupTitle.textContent = copy.title;
+  if (state.phase !== "starting" || !state.runtime?.installing) {
+    elements.startupMessage.textContent = copy.message;
+  }
+  elements.harnessStatus.textContent = running ? "运行中" : state.phase === "error" ? "启动失败" : state.phase === "starting" ? "启动中…" : "已停止";
+  elements.harnessStatus.classList.toggle("available", running);
+  elements.harnessStatus.classList.toggle("missing", failed);
+  elements.portStatus.textContent = state.status?.port ? String(state.status.port) : "—";
+  elements.errorMessage.textContent = state.status?.error || "发生未知错误，请查看运行日志。";
   elements.frameContainer.classList.toggle("hidden", !running);
+
   if (running && state.status?.url && state.frameUrl !== state.status.url) {
     state.frameUrl = state.status.url;
     elements.frameLoading.textContent = "正在加载 Harness 页面…";
@@ -142,32 +159,7 @@ function renderStatus() {
   setBusy(state.busy);
 }
 
-function renderRuntime() {
-  if (!state.runtime) return;
-  const label = state.runtime.installing
-    ? "正在安装运行时"
-    : state.runtime.available
-      ? "已找到 dsh"
-      : "需要安装运行时";
-  elements.runtimeValue.textContent = label;
-  elements.runtimeValue.classList.toggle("available", state.runtime.available);
-  elements.runtimeValue.classList.toggle("missing", !state.runtime.available);
-  elements.settingsRuntimePath.textContent =
-    state.runtime.path || state.runtime.message || "首次启动会自动安装 Node.js 和 dsh。";
-  elements.runtimeInstallStatus.textContent =
-    state.runtime.message || (state.runtime.available ? "运行时已就绪。" : "点击安装，应用会自动准备运行环境。");
-  elements.runtimeInstallButton.classList.toggle("hidden", state.runtime.available && !state.runtime.installing);
-  elements.runtimeInstallButton.textContent = state.runtime.installing ? "安装中…" : "安装运行时";
-  if (state.runtime.installing) {
-    elements.runtimeInstallStatus.classList.add("active");
-  } else {
-    elements.runtimeInstallStatus.classList.remove("active");
-  }
-  setBusy(state.busy);
-}
-
 function renderLogs() {
-  elements.logCount.textContent = String(state.logs.length);
   elements.logList.replaceChildren();
   if (!state.logs.length) {
     const empty = document.createElement("div");
@@ -194,9 +186,19 @@ function renderLogs() {
   elements.logList.scrollTop = elements.logList.scrollHeight;
 }
 
-function showDrawer(drawer) {
-  elements.logsDrawer.classList.toggle("hidden", drawer !== elements.logsDrawer);
-  elements.settingsDrawer.classList.toggle("hidden", drawer !== elements.settingsDrawer);
+function closePanels() {
+  elements.logsPanel.classList.add("hidden");
+  elements.settingsPanel.classList.add("hidden");
+}
+
+function showPanel(panel) {
+  elements.deskMenu.classList.add("hidden");
+  elements.logsPanel.classList.toggle("hidden", panel !== elements.logsPanel);
+  elements.settingsPanel.classList.toggle("hidden", panel !== elements.settingsPanel);
+}
+
+function toggleMenu() {
+  elements.deskMenu.classList.toggle("hidden");
 }
 
 async function refreshRuntime() {
@@ -204,35 +206,8 @@ async function refreshRuntime() {
     state.runtime = await call("runtime_status");
     renderRuntime();
   } catch (error) {
-    elements.runtimeValue.textContent = "无法检查";
+    elements.runtimeStatus.textContent = "无法检查";
     elements.settingsRuntimePath.textContent = errorMessage(error);
-  }
-}
-
-async function installRuntime() {
-  if (state.busy) return false;
-  state.busy = true;
-  if (state.runtime) state.runtime.installing = true;
-  elements.runtimeInstallStatus.textContent = "正在准备运行时…";
-  setBusy(true);
-  try {
-    state.runtime = await call("install_runtime");
-    renderRuntime();
-    setToast("运行时安装完成，可以启动 Harness");
-    return true;
-  } catch (error) {
-    const message = errorMessage(error);
-    if (state.runtime) {
-      state.runtime.installing = false;
-      state.runtime.message = message;
-    }
-    renderRuntime();
-    setToast(message, true);
-    return false;
-  } finally {
-    state.busy = false;
-    await refreshRuntime();
-    setBusy(false);
   }
 }
 
@@ -242,12 +217,7 @@ async function refreshStatus() {
     state.status = status;
     if (status.running) {
       state.phase = "running";
-      if (status.url && state.frameUrl !== status.url) {
-        state.frameUrl = status.url;
-        elements.frameLoading.classList.remove("hidden");
-        elements.frame.src = status.url;
-      }
-    } else if (!state.busy && state.phase !== "error") {
+    } else if (!state.busy && state.phase === "running") {
       state.phase = "idle";
       state.frameUrl = "";
       elements.frame.removeAttribute("src");
@@ -261,18 +231,17 @@ async function refreshStatus() {
 async function loadLogs() {
   try {
     state.logs = await call("harness_logs");
-    renderLogs();
   } catch {
     state.logs = [];
-    renderLogs();
   }
+  renderLogs();
 }
 
 async function startHarness() {
   if (state.busy || state.status?.running) return;
   state.phase = "starting";
   state.status = { running: false };
-  setBusy(true);
+  state.busy = true;
   renderStatus();
   try {
     if (!state.runtime?.available) {
@@ -280,14 +249,37 @@ async function startHarness() {
       renderRuntime();
     }
     state.status = await call("start_harness");
-    state.phase = state.status.running ? "running" : "idle";
+    if (!state.status.running) throw new Error(state.status.error || "Harness 未能启动。");
+    state.phase = "running";
     setToast("Harness 已启动");
   } catch (error) {
     state.status = { running: false, error: errorMessage(error) };
     state.phase = "error";
     setToast(state.status.error, true);
   } finally {
-    setBusy(false);
+    state.busy = false;
+    await loadLogs();
+    renderRuntime();
+    renderStatus();
+  }
+}
+
+async function restartHarness() {
+  if (state.busy) return;
+  state.phase = "starting";
+  state.busy = true;
+  renderStatus();
+  try {
+    state.status = await call("restart_harness");
+    if (!state.status.running) throw new Error(state.status.error || "Harness 未能启动。");
+    state.phase = "running";
+    setToast("Harness 已重启");
+  } catch (error) {
+    state.status = { running: false, error: errorMessage(error) };
+    state.phase = "error";
+    setToast(state.status.error, true);
+  } finally {
+    state.busy = false;
     await loadLogs();
     renderStatus();
   }
@@ -295,7 +287,7 @@ async function startHarness() {
 
 async function stopHarness() {
   if (state.busy || !state.status?.running) return;
-  setBusy(true);
+  state.busy = true;
   try {
     state.status = await call("stop_harness");
     state.phase = "idle";
@@ -305,29 +297,29 @@ async function stopHarness() {
   } catch (error) {
     setToast(errorMessage(error), true);
   } finally {
-    setBusy(false);
+    state.busy = false;
     await loadLogs();
     renderStatus();
   }
 }
 
-async function restartHarness() {
-  if (state.busy || !state.status?.running) return startHarness();
-  setBusy(true);
-  state.phase = "starting";
-  renderStatus();
+async function installRuntime() {
+  if (state.busy) return;
+  state.busy = true;
+  if (state.runtime) state.runtime.installing = true;
+  renderRuntime();
   try {
-    state.status = await call("restart_harness");
-    state.phase = state.status.running ? "running" : "idle";
-    state.frameUrl = "";
-    setToast("Harness 已重启");
+    state.runtime = await call("install_runtime");
+    setToast("运行时安装完成");
   } catch (error) {
-    state.status = { running: false, error: errorMessage(error) };
-    state.phase = "error";
-    setToast(state.status.error, true);
+    if (state.runtime) {
+      state.runtime.installing = false;
+      state.runtime.message = errorMessage(error);
+    }
+    setToast(errorMessage(error), true);
   } finally {
-    setBusy(false);
-    await loadLogs();
+    state.busy = false;
+    await refreshRuntime();
     renderStatus();
   }
 }
@@ -343,64 +335,46 @@ async function toggleDockIcon() {
   }
 }
 
-async function windowAction(command, args) {
-  try {
-    return await call(command, args);
-  } catch (error) {
-    setToast(errorMessage(error), true);
-    return null;
-  }
+function openLogs() {
+  showPanel(elements.logsPanel);
+  loadLogs();
 }
 
 function bindEvents() {
   elements.startButton.addEventListener("click", startHarness);
-  elements.emptyStartButton.addEventListener("click", startHarness);
-  elements.stopButton.addEventListener("click", stopHarness);
+  elements.retryButton.addEventListener("click", startHarness);
+  elements.startupLogsButton.addEventListener("click", openLogs);
+  elements.errorLogsButton.addEventListener("click", openLogs);
+  elements.menuButton.addEventListener("click", toggleMenu);
   elements.restartButton.addEventListener("click", restartHarness);
+  elements.stopButton.addEventListener("click", stopHarness);
+  elements.logsButton.addEventListener("click", openLogs);
+  elements.settingsButton.addEventListener("click", () => showPanel(elements.settingsPanel));
   elements.refreshButton.addEventListener("click", async () => {
+    elements.deskMenu.classList.add("hidden");
     await Promise.all([refreshStatus(), refreshRuntime(), loadLogs()]);
     setToast("状态已刷新");
   });
-
-  elements.logsButton.addEventListener("click", async () => {
-    showDrawer(elements.logsDrawer);
-    await loadLogs();
-  });
-  elements.openLogsButton.addEventListener("click", async () => {
-    showDrawer(elements.logsDrawer);
-    await loadLogs();
-  });
-  elements.closeLogsButton.addEventListener("click", () => showDrawer(null));
   elements.clearLogsButton.addEventListener("click", async () => {
     await call("clear_harness_logs");
     state.logs = [];
     renderLogs();
   });
-
-  elements.settingsButton.addEventListener("click", () => showDrawer(elements.settingsDrawer));
-  elements.closeSettingsButton.addEventListener("click", () => showDrawer(null));
+  elements.closeLogsButton.addEventListener("click", closePanels);
+  elements.closeSettingsButton.addEventListener("click", closePanels);
   elements.dockIconToggle.addEventListener("change", toggleDockIcon);
-  elements.refreshRuntimeButton.addEventListener("click", refreshRuntime);
   elements.runtimeInstallButton.addEventListener("click", installRuntime);
-
-  elements.minimizeButton.addEventListener("click", () => windowAction("window_minimize"));
-  elements.maximizeButton.addEventListener("click", () => windowAction("window_toggle_maximize"));
-  elements.hideButton.addEventListener("click", () => windowAction("window_hide"));
+  elements.refreshRuntimeButton.addEventListener("click", refreshRuntime);
   elements.frame.addEventListener("load", () => elements.frameLoading.classList.add("hidden"));
   elements.frame.addEventListener("error", () => {
     elements.frameLoading.textContent = "Harness 页面加载失败，请查看运行日志。";
     elements.frameLoading.classList.remove("hidden");
   });
 
-  // Keep every non-interactive pixel of the custom title bar draggable. The
-  // CSS drag region is not consistently honored by WebKit when a child view
-  // sits above it, so explicitly handing the gesture to Tauri is the reliable
-  // path on macOS 15 and Windows.
-  document.querySelector(".titlebar").addEventListener("mousedown", (event) => {
-    if (event.button !== 0) return;
-    if (event.target.closest("button, input, select, textarea, a")) return;
-    event.preventDefault();
-    windowAction("window_start_dragging");
+  document.addEventListener("click", (event) => {
+    if (!elements.deskMenu.contains(event.target) && event.target !== elements.menuButton) {
+      elements.deskMenu.classList.add("hidden");
+    }
   });
 }
 
@@ -413,13 +387,14 @@ async function listenForOutput() {
   });
   await listen("runtime-progress", (event) => {
     const progress = event.payload || {};
-    state.runtimeProgress = progress.message || "";
-    elements.runtimeInstallStatus.textContent = state.runtimeProgress;
     if (state.runtime) {
       state.runtime.installing = !progress.done;
-      state.runtime.message = state.runtimeProgress;
-      renderRuntime();
+      state.runtime.message = progress.message || "";
     }
+    if (state.phase === "starting" && progress.message) {
+      elements.startupMessage.textContent = progress.message;
+    }
+    renderRuntime();
   });
 }
 
@@ -430,8 +405,16 @@ async function initialize() {
   renderLogs();
   await listenForOutput();
   await Promise.all([refreshStatus(), refreshRuntime(), loadLogs()]);
+
+  if (state.status?.running) {
+    state.phase = "running";
+    renderStatus();
+  } else {
+    await startHarness();
+  }
+
   if (!elements.dockIconToggle.checked) {
-    await windowAction("set_dock_visibility", { visible: false });
+    await call("set_dock_visibility", { visible: false }).catch((error) => setToast(errorMessage(error), true));
   }
   window.setInterval(refreshStatus, 2500);
 }
