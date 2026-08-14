@@ -2,9 +2,10 @@ import AppKit
 import SwiftUI
 
 fileprivate enum WindowChromeMetrics {
-    static let titlebarHeight: CGFloat = 36
-    // Leave enough room for the three AppKit traffic-light buttons and a
-    // small hit slop so the drag layer cannot steal their clicks.
+    static let titlebarHeight: CGFloat = 44
+    static let trafficLightHitSlop: CGFloat = 6
+    // Fallback monitor starts after the traffic lights. The native overlay
+    // handles the remaining title-bar area while protecting each button.
     static let trafficLightReservedWidth: CGFloat = 92
 }
 
@@ -28,6 +29,8 @@ struct WindowChromeConfigurator: NSViewRepresentable {
 /// outside SwiftUI/WKWebView is important: WebKit otherwise consumes the
 /// mouse-down before AppKit can start a window drag.
 final class WindowDragOverlayView: NSView {
+    weak var protectedWindow: NSWindow?
+
     override var mouseDownCanMoveWindow: Bool {
         true
     }
@@ -37,7 +40,23 @@ final class WindowDragOverlayView: NSView {
     }
 
     override func hitTest(_ point: NSPoint) -> NSView? {
-        bounds.contains(point) ? self : nil
+        guard bounds.contains(point) else { return nil }
+
+        if let protectedWindow {
+            for buttonType: NSWindow.ButtonType in [.closeButton, .miniaturizeButton, .zoomButton] {
+                guard let button = protectedWindow.standardWindowButton(buttonType),
+                      !button.isHidden else { continue }
+                let buttonFrame = button.convert(button.bounds, to: self)
+                if buttonFrame.insetBy(
+                    dx: -WindowChromeMetrics.trafficLightHitSlop,
+                    dy: -WindowChromeMetrics.trafficLightHitSlop
+                ).contains(point) {
+                    return nil
+                }
+            }
+        }
+
+        return self
     }
 
     override func mouseDown(with event: NSEvent) {
@@ -68,6 +87,11 @@ final class WindowChromeView: NSView {
         configureWindow()
     }
 
+    override func layout() {
+        super.layout()
+        updateWindowDragOverlayFrame()
+    }
+
     func configureWindow() {
         guard let window else { return }
 
@@ -84,6 +108,7 @@ final class WindowChromeView: NSView {
         if isMainWindow {
             window.styleMask.formUnion([.titled, .closable, .miniaturizable, .resizable])
         }
+        window.styleMask.insert(.titled)
         window.styleMask.insert(.fullSizeContentView)
         window.titleVisibility = .hidden
         window.titlebarAppearsTransparent = true
@@ -95,6 +120,7 @@ final class WindowChromeView: NSView {
             window.title = "设置"
             window.standardWindowButton(.closeButton)?.isHidden = false
         }
+        window.isMovable = true
         window.isMovableByWindowBackground = true
 
         installWindowDragOverlay(in: window)
@@ -115,18 +141,30 @@ final class WindowChromeView: NSView {
 
         let overlay = windowDragOverlay ?? WindowDragOverlayView()
         windowDragOverlay = overlay
+        overlay.protectedWindow = window
         if overlay.superview !== contentView {
             overlay.removeFromSuperview()
             contentView.addSubview(overlay, positioned: .above, relativeTo: nil)
+        } else {
+            // SwiftUI/WKWebView can insert views after the representable has
+            // been attached. Re-adding keeps the drag strip above the web view.
+            contentView.addSubview(overlay, positioned: .above, relativeTo: nil)
         }
+
+        updateWindowDragOverlayFrame()
+    }
+
+    private func updateWindowDragOverlayFrame() {
+        guard let contentView = window?.contentView,
+              let overlay = windowDragOverlay else { return }
 
         // NSView coordinates start at the bottom-left. Keep this strip pinned
         // to the top edge while allowing it to follow window resizing.
         overlay.autoresizingMask = [.width, .minYMargin]
         overlay.frame = NSRect(
-            x: WindowChromeMetrics.trafficLightReservedWidth,
+            x: 0,
             y: max(0, contentView.bounds.height - WindowChromeMetrics.titlebarHeight),
-            width: max(0, contentView.bounds.width - WindowChromeMetrics.trafficLightReservedWidth),
+            width: max(0, contentView.bounds.width),
             height: min(WindowChromeMetrics.titlebarHeight, contentView.bounds.height)
         )
     }

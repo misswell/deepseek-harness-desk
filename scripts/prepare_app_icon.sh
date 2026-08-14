@@ -13,10 +13,11 @@ mkdir -p "$assets_dir"
 work_dir="$(mktemp -d "${TMPDIR:-/tmp}/deepseek-harness-icon.XXXXXX")"
 trap 'rm -rf "$work_dir"' EXIT
 source_1024_png="$work_dir/source-1024.png"
+rounded_source_png="$work_dir/rounded-source-1024.png"
 
 # The supplied source is the official DeepSeek Harness logo.  Keep its white
-# tile, add a real alpha rounded-corner mask, and normalize the complete tile
-# into the macOS visual safe area before the Xcode asset compiler resizes it.
+# tile, add a real alpha rounded-corner mask, then scale the complete masked
+# tile into the macOS visual safe area before the Xcode asset compiler resizes it.
 # Keep the 1024px master outside the appiconset so Contents.json lists every packaged layer.
 xcrun swift "$repo_dir/scripts/make_logo_transparent.swift" \
   --input "$source_png" \
@@ -27,9 +28,13 @@ icon_preparation_script="/Users/guofeng/.codex/skills/generate-app-icons/scripts
 if [[ -f "$icon_preparation_script" ]]; then
   xcrun swift "$icon_preparation_script" \
     --input "$source_1024_png" \
-    --output "$master_png" \
-    --scale 0.825 \
+    --output "$rounded_source_png" \
+    --scale 1 \
     --corner-radius 0.22
+  xcrun swift "$icon_preparation_script" \
+    --input "$rounded_source_png" \
+    --output "$master_png" \
+    --scale 0.825
 else
   echo "Missing macOS icon preparation helper: $icon_preparation_script" >&2
   exit 1

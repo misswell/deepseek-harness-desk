@@ -211,6 +211,30 @@ final class DeepSeekHarnessDeskTests: XCTestCase {
     }
 
     @MainActor
+    func testWindowChromeInstallsDraggableTopStripAboveContent() {
+        let contentView = NSView(frame: NSRect(x: 0, y: 0, width: 900, height: 600))
+        let window = NSWindow(
+            contentRect: contentView.frame,
+            styleMask: [.titled, .closable, .resizable],
+            backing: .buffered,
+            defer: false
+        )
+        window.contentView = contentView
+
+        let chrome = WindowChromeView(isMainWindow: false)
+        chrome.frame = contentView.bounds
+        chrome.autoresizingMask = [.width, .height]
+        contentView.addSubview(chrome)
+        chrome.configureWindow()
+
+        let overlays = contentView.subviews.compactMap { $0 as? WindowDragOverlayView }
+        XCTAssertEqual(overlays.count, 1)
+        XCTAssertTrue(overlays[0].mouseDownCanMoveWindow)
+        XCTAssertEqual(overlays[0].frame.minY, contentView.bounds.maxY - 44, accuracy: 1)
+        XCTAssertTrue(contentView.subviews.last === overlays[0])
+    }
+
+    @MainActor
     func testWebKitPolicyCancellationDoesNotShowLoadError() {
         let controller = WebViewController()
         let webView = WKWebView(frame: .zero)
