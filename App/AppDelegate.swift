@@ -37,7 +37,14 @@ final class WindowDragOverlayView: NSView {
     }
 
     override func hitTest(_ point: NSPoint) -> NSView? {
-        bounds.contains(point) ? self : nil
+        guard bounds.contains(point) else { return nil }
+
+        // Never steal the traffic-light buttons. The reserved region is the
+        // leading 92pt where close/minimize/zoom live.
+        if point.x < WindowChromeMetrics.trafficLightReservedWidth {
+            return nil
+        }
+        return self
     }
 
     override func mouseDown(with event: NSEvent) {
@@ -154,18 +161,6 @@ final class WindowChromeView: NSView {
     }
 }
 
-private final class WindowDragSession {
-    weak var window: NSWindow?
-    let initialMouseLocation: NSPoint
-    let initialFrame: NSRect
-
-    init(window: NSWindow, initialMouseLocation: NSPoint, initialFrame: NSRect) {
-        self.window = window
-        self.initialMouseLocation = initialMouseLocation
-        self.initialFrame = initialFrame
-    }
-}
-
 @MainActor
 final class ApplicationTerminationCoordinator {
     typealias AsyncAction = @MainActor () async -> Void
@@ -245,7 +240,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, Obse
     private var statusMenu: NSMenu?
     private weak var dockIconMenuItem: NSMenuItem?
     private var windowDragEventMonitor: Any?
-    private var windowDragSession: WindowDragSession?
     private let terminationCoordinator = ApplicationTerminationCoordinator()
     private static var terminatingForUpdate = false
 
@@ -257,12 +251,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, Obse
         }
         showsDockIcon = UserDefaults.standard.bool(forKey: Self.dockIconPreferenceKey)
         super.init()
-    }
-
-    deinit {
-        if let windowDragEventMonitor {
-            NSEvent.removeMonitor(windowDragEventMonitor)
-        }
     }
 
     func applicationDidFinishLaunching(_ notification: Notification) {
@@ -317,60 +305,31 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, Obse
         terminatingForUpdate = false
     }
 
+    deinit {
+        if let windowDragEventMonitor {
+            NSEvent.removeMonitor(windowDragEventMonitor)
+        }
+    }
+
     private func installWindowDragEventMonitor() {
         guard windowDragEventMonitor == nil else { return }
 
         windowDragEventMonitor = NSEvent.addLocalMonitorForEvents(
-            matching: [.leftMouseDown, .leftMouseDragged, .leftMouseUp]
+            matching: [.leftMouseDown]
         ) { [weak self] event in
-            guard let self else { return event }
-
-            switch event.type {
-            case .leftMouseDown:
-                self.windowDragSession = nil
-                guard let window = event.window,
-                      self.isWindowDragStart(event, in: window) else {
-                    return event
-                }
-
-                if event.clickCount == 2 {
-                    window.zoom(nil)
-                    return nil
-                }
-
-                self.windowDragSession = WindowDragSession(
-                    window: window,
-                    initialMouseLocation: NSEvent.mouseLocation,
-                    initialFrame: window.frame
-                )
-                return nil
-
-            case .leftMouseDragged:
-                guard let session = self.windowDragSession,
-                      let window = session.window else {
-                    self.windowDragSession = nil
-                    return event
-                }
-
-                let currentLocation = NSEvent.mouseLocation
-                let delta = NSPoint(
-                    x: currentLocation.x - session.initialMouseLocation.x,
-                    y: currentLocation.y - session.initialMouseLocation.y
-                )
-                window.setFrameOrigin(NSPoint(
-                    x: session.initialFrame.origin.x + delta.x,
-                    y: session.initialFrame.origin.y + delta.y
-                ))
-                return nil
-
-            case .leftMouseUp:
-                guard self.windowDragSession != nil else { return event }
-                self.windowDragSession = nil
-                return nil
-
-            default:
+            guard let self,
+                  let window = event.window,
+                  self.isWindowDragStart(event, in: window) else {
                 return event
             }
+
+            if event.clickCount == 2 {
+                window.zoom(nil)
+                return nil
+            }
+
+            window.performDrag(with: event)
+            return nil
         }
     }
 
