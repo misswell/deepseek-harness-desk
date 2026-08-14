@@ -3,6 +3,12 @@ name: Release macOS app
 on:
   push:
     tags: ["v*"]
+  workflow_dispatch:
+    inputs:
+      release_tag:
+        description: "Version tag to build and publish"
+        required: true
+        type: string
 
 permissions:
   contents: write
@@ -10,12 +16,15 @@ permissions:
 jobs:
   release:
     runs-on: macos-15
+    env:
+      RELEASE_TAG: ${{ inputs.release_tag || github.ref_name }}
 
     steps:
       - name: Check out source
         uses: actions/checkout@v4
         with:
           fetch-depth: 0
+          ref: ${{ inputs.release_tag || github.ref }}
 
       - name: Import Developer ID signing certificate
         env:
@@ -118,8 +127,14 @@ jobs:
       - name: Publish GitHub release
         env:
           GH_TOKEN: ${{ github.token }}
-        run: >-
-          gh release create "${{ github.ref_name }}"
-          --title "DeepSeek Harness Desk ${{ github.ref_name }}"
-          --generate-notes
-          "${{ steps.package.outputs.zip }}#DeepSeek Harness Desk for macOS"
+        run: |
+          if gh release view "$RELEASE_TAG" >/dev/null 2>&1; then
+            gh release upload "$RELEASE_TAG" \
+              "${{ steps.package.outputs.zip }}#DeepSeek Harness Desk for macOS" \
+              --clobber
+          else
+            gh release create "$RELEASE_TAG" \
+              --title "DeepSeek Harness Desk $RELEASE_TAG" \
+              --generate-notes \
+              "${{ steps.package.outputs.zip }}#DeepSeek Harness Desk for macOS"
+          fi
