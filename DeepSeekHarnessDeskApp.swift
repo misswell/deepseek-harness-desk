@@ -35,9 +35,10 @@ struct DeepSeekHarnessDeskApp: App {
                 }
                 .background(WindowChromeConfigurator())
         }
-        // Keep a real AppKit title-bar hit area. The title text is hidden in
-        // WindowChromeConfigurator, but the native bar remains draggable.
-        .windowStyle(.titleBar)
+        // Keep the title-bar area transparent. WindowChromeConfigurator adds
+        // the native drag strip so the WebView remains draggable without
+        // bringing back an opaque AppKit title bar.
+        .windowStyle(.hiddenTitleBar)
         .commands {
             CommandMenu("View") {
                 Button("放大界面") {
@@ -122,6 +123,6 @@ struct DeepSeekHarnessDeskApp: App {
                 .environmentObject(appState.updateManager)
                 .background(WindowChromeConfigurator(isMainWindow: false))
         }
-        .windowStyle(.titleBar)
+        .windowStyle(.hiddenTitleBar)
     }
 }

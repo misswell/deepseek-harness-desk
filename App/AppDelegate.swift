@@ -113,6 +113,8 @@ final class WindowChromeView: NSView {
         window.titleVisibility = .hidden
         window.titlebarAppearsTransparent = true
         window.titlebarSeparatorStyle = .none
+        window.isOpaque = false
+        window.backgroundColor = .clear
         for buttonType: NSWindow.ButtonType in [.closeButton, .miniaturizeButton, .zoomButton] {
             window.standardWindowButton(buttonType)?.isHidden = !isMainWindow
         }
@@ -350,10 +352,22 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, Obse
 
     func setShowsDockIcon(_ visible: Bool) {
         guard showsDockIcon != visible else { return }
+        let windowToRestore = NSApp.keyWindow ?? mainWindow
         showsDockIcon = visible
         UserDefaults.standard.set(visible, forKey: Self.dockIconPreferenceKey)
         applyDockIconPolicy()
         updateStatusMenuState()
+
+        // Changing from `.regular` to `.accessory` can deactivate the app and
+        // hide its current window. Re-activate on the next run-loop turn so
+        // switching this preference never strands the UI behind other apps.
+        if !visible {
+            DispatchQueue.main.async { [weak self] in
+                guard let self else { return }
+                self.activateApplication()
+                self.restoreWindowAfterActivationPolicyChange(preferred: windowToRestore)
+            }
+        }
     }
 
     func openMainWindow(forceReload: Bool = true) {
@@ -365,8 +379,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, Obse
         }
 
         let shouldReload = forceReload || !window.isVisible
-        window.makeKeyAndOrderFront(nil)
-        NSApp.activate(ignoringOtherApps: true)
+        activateApplication()
+        bringWindowToFront(window)
         webViewController?.restore(
             url: harnessManager?.serverURL,
             forceReload: shouldReload
@@ -478,9 +492,28 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, Obse
         let policy: NSApplication.ActivationPolicy = showsDockIcon ? .regular : .accessory
         guard NSApp.activationPolicy() != policy else { return }
         _ = NSApp.setActivationPolicy(policy)
-        if showsDockIcon {
-            NSApp.activate(ignoringOtherApps: true)
+        activateApplication()
+    }
+
+    private func activateApplication() {
+        NSApp.unhide(nil)
+        NSApp.activate(ignoringOtherApps: true)
+    }
+
+    private func restoreWindowAfterActivationPolicyChange(preferred: NSWindow?) {
+        let window = [preferred, mainWindow]
+            .compactMap { $0 }
+            .first { NSApp.windows.contains($0) }
+        guard let window else { return }
+        bringWindowToFront(window)
+    }
+
+    private func bringWindowToFront(_ window: NSWindow) {
+        if window.isMiniaturized {
+            window.deminiaturize(nil)
         }
+        window.orderFrontRegardless()
+        window.makeKeyAndOrderFront(nil)
     }
 
     private func updateStatusMenuState() {

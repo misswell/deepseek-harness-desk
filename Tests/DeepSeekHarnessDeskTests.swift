@@ -208,6 +208,9 @@ final class DeepSeekHarnessDeskTests: XCTestCase {
             delegate.windowShouldClose(window),
             "Closing the main window must hide it so the Dock click can bring it back."
         )
+
+        delegate.openMainWindow(forceReload: false)
+        XCTAssertTrue(window.isVisible)
     }
 
     @MainActor
@@ -232,6 +235,10 @@ final class DeepSeekHarnessDeskTests: XCTestCase {
         XCTAssertTrue(overlays[0].mouseDownCanMoveWindow)
         XCTAssertEqual(overlays[0].frame.minY, contentView.bounds.maxY - 44, accuracy: 1)
         XCTAssertTrue(contentView.subviews.last === overlays[0])
+        XCTAssertTrue(window.styleMask.contains(.fullSizeContentView))
+        XCTAssertTrue(window.titlebarAppearsTransparent)
+        XCTAssertFalse(window.isOpaque)
+        XCTAssertEqual(window.backgroundColor, .clear)
     }
 
     @MainActor
