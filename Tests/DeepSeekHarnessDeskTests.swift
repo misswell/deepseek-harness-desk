@@ -151,6 +151,18 @@ final class DeepSeekHarnessDeskTests: XCTestCase {
     }
 
     @MainActor
+    func testApplicationShouldTerminateDuringUpdateBypassesCoordinator() {
+        let delegate = AppDelegate()
+        delegate.prepareForUpdateTermination()
+
+        XCTAssertEqual(
+            delegate.applicationShouldTerminate(NSApp),
+            .terminateNow,
+            "Update replacement must not wait for the graceful termination reply."
+        )
+    }
+
+    @MainActor
     func testDockReopenHandlesReopenWhenOnlySettingsWindowIsVisible() {
         let delegate = AppDelegate()
         let mainWindow = NSWindow(

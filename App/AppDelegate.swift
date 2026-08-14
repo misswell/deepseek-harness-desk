@@ -196,6 +196,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject {
     private var pendingWindowOpen = false
     private var windowDragEventMonitor: Any?
     private let terminationCoordinator = ApplicationTerminationCoordinator()
+    private var terminatingForUpdate = false
 
     @Published private(set) var showsDockIcon: Bool
 
@@ -230,6 +231,20 @@ final class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject {
     func register(mainWindow: NSWindow) {
         self.mainWindow = mainWindow
         mainWindow.isReleasedWhenClosed = false
+    }
+
+    /// Prepares the App for the update replacement path.
+    ///
+    /// The updater launches an external replacement script and then asks the
+    /// App to terminate. The normal graceful termination coordinator returns
+    /// `.terminateLater` and waits for a main-actor reply, but that reply can
+    /// never run because AppKit blocks the main thread inside the termination
+    /// event loop. For updates we bypass the coordinator entirely: stop the
+    /// Harness immediately and let `applicationShouldTerminate` answer
+    /// `.terminateNow`.
+    func prepareForUpdateTermination() {
+        terminatingForUpdate = true
+        harnessManager?.forceStopImmediately()
     }
 
     private func installWindowDragEventMonitor() {
@@ -304,7 +319,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject {
     }
 
     func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
-        terminationCoordinator.requestTermination(
+        if terminatingForUpdate {
+            return .terminateNow
+        }
+        return terminationCoordinator.requestTermination(
             hasRunningProcess: harnessManager?.hasRunningProcess == true,
             stop: { @MainActor [weak self] in
                 await self?.harnessManager?.stop()
