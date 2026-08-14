@@ -1,6 +1,13 @@
 import AppKit
 import SwiftUI
 
+fileprivate enum WindowChromeMetrics {
+    static let titlebarHeight: CGFloat = 36
+    // Leave enough room for the three AppKit traffic-light buttons and a
+    // small hit slop so the drag layer cannot steal their clicks.
+    static let trafficLightReservedWidth: CGFloat = 92
+}
+
 struct WindowChromeConfigurator: NSViewRepresentable {
     let isMainWindow: Bool
 
@@ -66,16 +73,19 @@ final class WindowChromeView: NSView {
         // corners. Full-size content lets the WebView extend beneath the
         // hidden title-bar area without turning the window into a borderless
         // rectangle.
+        if isMainWindow {
+            window.styleMask.formUnion([.titled, .closable, .miniaturizable, .resizable])
+        }
         window.styleMask.insert(.fullSizeContentView)
         window.titleVisibility = .hidden
         window.titlebarAppearsTransparent = true
         window.titlebarSeparatorStyle = .none
-        for buttonType: NSWindow.ButtonType in [
-            .closeButton,
-            .miniaturizeButton,
-            .zoomButton
-        ] {
-            window.standardWindowButton(buttonType)?.isHidden = true
+        for buttonType: NSWindow.ButtonType in [.closeButton, .miniaturizeButton, .zoomButton] {
+            window.standardWindowButton(buttonType)?.isHidden = !isMainWindow
+        }
+        if !isMainWindow {
+            window.title = "设置"
+            window.standardWindowButton(.closeButton)?.isHidden = false
         }
         window.isMovableByWindowBackground = true
 
@@ -98,10 +108,10 @@ final class WindowChromeView: NSView {
         // to the top edge while allowing it to follow window resizing.
         overlay.autoresizingMask = [.width, .minYMargin]
         overlay.frame = NSRect(
-            x: 0,
-            y: max(0, contentView.bounds.height - 36),
-            width: contentView.bounds.width,
-            height: min(36, contentView.bounds.height)
+            x: WindowChromeMetrics.trafficLightReservedWidth,
+            y: max(0, contentView.bounds.height - WindowChromeMetrics.titlebarHeight),
+            width: max(0, contentView.bounds.width - WindowChromeMetrics.trafficLightReservedWidth),
+            height: min(WindowChromeMetrics.titlebarHeight, contentView.bounds.height)
         )
     }
 }
@@ -171,7 +181,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject {
             guard let contentView = window.contentView else { return event }
             let point = contentView.convert(event.locationInWindow, from: nil)
             let distanceFromTop = contentView.bounds.maxY - point.y
-            guard distanceFromTop >= 0, distanceFromTop <= 36 else {
+            guard distanceFromTop >= 0,
+                  distanceFromTop <= WindowChromeMetrics.titlebarHeight,
+                  point.x >= WindowChromeMetrics.trafficLightReservedWidth else {
                 return event
             }
 
@@ -242,12 +254,19 @@ final class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject {
         statusItem = item
         guard let button = item.button else { return }
 
-        let icon = (NSApp.applicationIconImage.copy() as? NSImage) ?? NSImage(
+        let icon: NSImage
+        if let statusIcon = NSImage(named: "StatusBarIcon") {
+            icon = statusIcon
+        } else if let fallbackIcon = NSImage(
             systemSymbolName: "shippingbox.fill",
             accessibilityDescription: "DeepSeek Harness Desk"
-        )
-        icon?.size = NSSize(width: 18, height: 18)
-        icon?.isTemplate = false
+        ) {
+            icon = fallbackIcon
+        } else {
+            icon = NSApp.applicationIconImage
+        }
+        icon.size = NSSize(width: 18, height: 18)
+        icon.isTemplate = true
         button.image = icon
         button.imageScaling = .scaleProportionallyDown
         button.toolTip = "打开 DeepSeek Harness Desk"

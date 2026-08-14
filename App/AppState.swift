@@ -14,7 +14,7 @@ final class AppState: ObservableObject {
 
     init() {
         let logManager = LogManager()
-        let runtimeManager = RuntimeManager()
+        let runtimeManager = RuntimeManager(logger: logManager)
         self.logManager = logManager
         self.runtimeManager = runtimeManager
         let harnessManager = HarnessManager(
@@ -28,7 +28,7 @@ final class AppState: ObservableObject {
             return true
         }
         self.webViewController = WebViewController()
-        self.updateManager = UpdateManager()
+        self.updateManager = UpdateManager(logger: logManager)
     }
 
     deinit {

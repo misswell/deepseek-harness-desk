@@ -34,6 +34,11 @@ enum HarnessState: Equatable, Sendable {
         }
     }
 
+    var isFailed: Bool {
+        if case .failed = self { return true }
+        return false
+    }
+
     var errorMessage: String? {
         if case let .failed(message) = self {
             return message

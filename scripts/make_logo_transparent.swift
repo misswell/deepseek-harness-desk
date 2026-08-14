@@ -5,10 +5,11 @@ import ImageIO
 struct Options {
     var input: String?
     var output: String?
+    var whiteOutput = false
 }
 
 func usage() -> Never {
-    fputs("Usage: make_logo_transparent.swift --input INPUT.png --output OUTPUT.png\n", stderr)
+    fputs("Usage: make_logo_transparent.swift --input INPUT.png --output OUTPUT.png [--white]\n", stderr)
     exit(2)
 }
 
@@ -25,6 +26,8 @@ while index < arguments.count {
         index += 1
         guard index < arguments.count else { usage() }
         options.output = arguments[index]
+    case "--white":
+        options.whiteOutput = true
     default:
         usage()
     }
@@ -56,14 +59,16 @@ guard let context = CGContext(
 context.draw(image, in: CGRect(x: 0, y: 0, width: width, height: height))
 
 // The supplied avatar is the original solid blue whale on white.  Key only
-// the white background and preserve the official blue mark.
+// the white background and preserve the official mark.  Status-bar variants
+// can request a pure white mark while keeping the same alpha mask.
 let logoColor: (UInt8, UInt8, UInt8) = (77, 107, 254)
+let outputColor: (UInt8, UInt8, UInt8) = options.whiteOutput ? (255, 255, 255) : logoColor
 for offset in stride(from: 0, to: pixels.count, by: 4) {
     let red = CGFloat(pixels[offset])
     let alpha = min(1, max(0, (255 - red) / CGFloat(255 - Int(logoColor.0))))
-    pixels[offset] = UInt8((CGFloat(logoColor.0) * alpha).rounded())
-    pixels[offset + 1] = UInt8((CGFloat(logoColor.1) * alpha).rounded())
-    pixels[offset + 2] = UInt8((CGFloat(logoColor.2) * alpha).rounded())
+    pixels[offset] = UInt8((CGFloat(outputColor.0) * alpha).rounded())
+    pixels[offset + 1] = UInt8((CGFloat(outputColor.1) * alpha).rounded())
+    pixels[offset + 2] = UInt8((CGFloat(outputColor.2) * alpha).rounded())
     pixels[offset + 3] = UInt8((alpha * 255).rounded())
 }
 

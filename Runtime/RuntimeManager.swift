@@ -35,6 +35,10 @@ final class RuntimeManager: ObservableObject {
     @Published private(set) var isUpdating = false
     @Published private(set) var automaticallyChecksForUpdates: Bool
     @Published private(set) var automaticallyInstallsUpdates: Bool
+    @Published private(set) var installProgress: Double?
+    @Published private(set) var installStep = ""
+    @Published private(set) var installProgressLabel = ""
+    @Published private(set) var installLogs: [String] = []
 
     var needsInstallation: Bool {
         dshExecutableURL == nil
@@ -44,12 +48,20 @@ final class RuntimeManager: ObservableObject {
         installState.isInstalling
     }
 
+    var showsInstallProgress: Bool {
+        if isInstalling { return true }
+        if case .failed = installState { return true }
+        return false
+    }
+
     private let fileManager = FileManager.default
+    private let logger: LogManager
     private var installationTask: Task<Void, Never>?
     private var updateCheckTask: Task<Void, Never>?
     private var harnessRestartHandler: (() async -> Bool)?
 
-    init() {
+    init(logger: LogManager = LogManager()) {
+        self.logger = logger
         self.status = "正在检查 DeepSeek Harness"
         self.managedHarnessVersion = UserDefaults.standard.string(forKey: "managedHarnessVersion") ?? Self.harnessVersion
         if UserDefaults.standard.object(forKey: "autoCheckHarnessUpdates") == nil {
@@ -170,7 +182,7 @@ final class RuntimeManager: ObservableObject {
 
         do {
             var request = URLRequest(url: Self.npmMetadataURL)
-            request.setValue("DeepSeek Harness Desk/\(Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "0.2.8")", forHTTPHeaderField: "User-Agent")
+            request.setValue("DeepSeek Harness Desk/\(Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "0.2.11")", forHTTPHeaderField: "User-Agent")
             let (data, response) = try await URLSession.shared.data(for: request)
             if let httpResponse = response as? HTTPURLResponse,
                !(200..<300).contains(httpResponse.statusCode) {
@@ -253,6 +265,7 @@ final class RuntimeManager: ObservableObject {
     }
 
     private func performInstallation() async {
+        beginInstallation(title: "安装内置 DeepSeek Harness")
         let runtimeDirectory = PathUtils.applicationSupportDirectory
             .appendingPathComponent("runtime", isDirectory: true)
         let stagingDirectory = runtimeDirectory
@@ -303,13 +316,20 @@ final class RuntimeManager: ObservableObject {
             UserDefaults.standard.set(Self.harnessVersion, forKey: "managedHarnessVersion")
             refresh()
             installationMessage = "安装完成"
+            installProgress = 1
+            installProgressLabel = "已完成"
+            appendInstallLog("内置 Node.js 和 DeepSeek Harness 安装完成")
             installState = .installed
         } catch is CancellationError {
             installationMessage = "安装已取消"
+            setInstalling("安装已取消")
+            appendInstallLog("安装已取消")
             installState = .ready
         } catch {
             let message = error.localizedDescription
             installationMessage = message
+            setInstalling("安装失败")
+            appendInstallLog("失败：\(message)")
             installState = .failed(message)
             status = "安装失败"
         }
@@ -326,7 +346,9 @@ final class RuntimeManager: ObservableObject {
 
         setInstalling("正在下载 Node.js \(Self.nodeVersion)…")
         try await download(downloadURL, to: archiveURL)
+        appendInstallLog("Node.js 下载完成（\(formatBytes(fileSize(at: archiveURL)))）")
         try verifySHA256(of: archiveURL, expected: expectedSHA256)
+        appendInstallLog("Node.js SHA-256 校验通过")
 
         let extractionDirectory = stagingDirectory.appendingPathComponent("node-extracted", isDirectory: true)
         try fileManager.createDirectory(at: extractionDirectory, withIntermediateDirectories: true)
@@ -378,7 +400,12 @@ final class RuntimeManager: ObservableObject {
                 "\(Self.packageName)@\(version)"
             ],
             environment: processEnvironmentForNode(nodeRoot: nodeRoot),
-            currentDirectoryURL: dshStaging
+            currentDirectoryURL: dshStaging,
+            onOutput: { [weak self] output in
+                Task { @MainActor [weak self] in
+                    self?.appendInstallLogChunk(output)
+                }
+            }
         )
         guard result.succeeded else {
             let details = result.output
@@ -411,16 +438,25 @@ final class RuntimeManager: ObservableObject {
     }
 
     private func download(_ url: URL, to destination: URL) async throws {
-        setInstalling("正在下载运行时…")
-        let (temporaryURL, response) = try await URLSession.shared.download(from: url)
-        if let response = response as? HTTPURLResponse,
-           !(200..<300).contains(response.statusCode) {
+        var request = URLRequest(
+            url: url,
+            cachePolicy: .reloadIgnoringLocalCacheData,
+            timeoutInterval: 300
+        )
+        request.setValue("DeepSeek Harness Desk", forHTTPHeaderField: "User-Agent")
+        let response = try await DownloadRunner.download(
+            request: request,
+            using: .shared,
+            to: destination,
+            onProgress: { [weak self] progress in
+                Task { @MainActor [weak self] in
+                    self?.updateDownloadProgress(progress)
+                }
+            }
+        )
+        if !(200..<300).contains(response.statusCode) {
             throw RuntimeError.installationFailed("下载失败（HTTP \(response.statusCode)）。")
         }
-        if fileManager.fileExists(atPath: destination.path) {
-            try fileManager.removeItem(at: destination)
-        }
-        try fileManager.moveItem(at: temporaryURL, to: destination)
     }
 
     private func verifySHA256(of file: URL, expected: String) throws {
@@ -436,8 +472,64 @@ final class RuntimeManager: ObservableObject {
 
     private func setInstalling(_ message: String) {
         installationMessage = message
+        installStep = message
+        installProgress = nil
+        installProgressLabel = ""
         installState = .installing(message)
         status = message
+        if installLogs.last != message {
+            appendInstallLog(message)
+        }
+    }
+
+    private func beginInstallation(title: String) {
+        installProgress = nil
+        installStep = ""
+        installProgressLabel = ""
+        installLogs.removeAll(keepingCapacity: true)
+        appendInstallLog(title)
+    }
+
+    private func updateDownloadProgress(_ progress: DownloadRunner.Progress) {
+        installProgress = progress.fractionCompleted
+        if let totalBytes = progress.totalBytes {
+            installProgressLabel = "\(formatBytes(progress.bytesWritten)) / \(formatBytes(totalBytes))"
+        } else {
+            installProgressLabel = formatBytes(progress.bytesWritten)
+        }
+    }
+
+    private func appendInstallLogChunk(_ output: String) {
+        for line in output
+            .replacingOccurrences(of: "\r", with: "\n")
+            .split(whereSeparator: \.isNewline)
+            .map(String.init)
+            .map({ $0.trimmingCharacters(in: .whitespacesAndNewlines) })
+            where !line.isEmpty {
+            appendInstallLog(line)
+        }
+    }
+
+    private func appendInstallLog(_ message: String) {
+        let normalized = message.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !normalized.isEmpty else { return }
+        installLogs.append(normalized)
+        if installLogs.count > 120 {
+            installLogs.removeFirst(installLogs.count - 120)
+        }
+        logger.append("[Runtime] \(normalized)", to: .update)
+    }
+
+    private func fileSize(at url: URL) -> Int64 {
+        guard let attributes = try? fileManager.attributesOfItem(atPath: url.path),
+              let size = attributes[.size] as? NSNumber else {
+            return 0
+        }
+        return size.int64Value
+    }
+
+    private func formatBytes(_ bytes: Int64) -> String {
+        ByteCountFormatter.string(fromByteCount: bytes, countStyle: .file)
     }
 
     private var managedNodeExecutableURL: URL {
@@ -468,6 +560,7 @@ final class RuntimeManager: ObservableObject {
 
         isUpdating = true
         let restartHarness = harnessRestartHandler
+        beginInstallation(title: "开始更新内置 dsh \(version)")
         setInstalling("正在下载并安装内置 dsh \(version)…")
         let runtimeDirectory = PathUtils.applicationSupportDirectory
             .appendingPathComponent("runtime", isDirectory: true)
@@ -496,16 +589,23 @@ final class RuntimeManager: ObservableObject {
             updateStatus = automatically
                 ? "内置 dsh 已更新到 \(version)"
                 : "内置 dsh 更新完成：\(version)"
+            installProgress = 1
+            installProgressLabel = "已完成"
+            appendInstallLog("内置 dsh \(version) 安装完成")
             installState = .installed
             didInstall = true
         } catch is CancellationError {
             updateStatus = "内置 dsh 更新已取消"
             installationMessage = updateStatus
+            setInstalling("内置 dsh 更新已取消")
+            appendInstallLog("更新已取消")
             installState = .ready
         } catch {
             let message = error.localizedDescription
             updateStatus = "内置 dsh 更新失败：\(message)"
             installationMessage = message
+            setInstalling("内置 dsh 更新失败")
+            appendInstallLog("失败：\(message)")
             installState = .failed(message)
             if automatically {
                 showUpdateAlert(

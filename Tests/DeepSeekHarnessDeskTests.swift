@@ -100,6 +100,40 @@ final class DeepSeekHarnessDeskTests: XCTestCase {
         XCTAssertFalse(UpdateManager.isNewer("v0.2.0", than: "0.2.0"))
     }
 
+    func testAutomaticUpdateCheckIntervalsMatchSettings() {
+        XCTAssertEqual(UpdateManager.AutomaticCheckInterval.hourly.seconds, 60 * 60)
+        XCTAssertEqual(UpdateManager.AutomaticCheckInterval.daily.seconds, 24 * 60 * 60)
+        XCTAssertEqual(UpdateManager.AutomaticCheckInterval.weekly.seconds, 7 * 24 * 60 * 60)
+    }
+
+    func testWebViewRecoveryRetriesTransientNavigationFailuresWithinBound() {
+        let transientError = NSError(
+            domain: NSURLErrorDomain,
+            code: NSURLErrorCannotConnectToHost
+        )
+        let permanentError = NSError(domain: "HarnessWebView", code: 1)
+
+        XCTAssertTrue(WebViewLoadRecovery.shouldRetry(transientError, attempt: 0))
+        XCTAssertTrue(WebViewLoadRecovery.shouldRetry(transientError, attempt: 2))
+        XCTAssertFalse(WebViewLoadRecovery.shouldRetry(transientError, attempt: 3))
+        XCTAssertFalse(WebViewLoadRecovery.shouldRetry(permanentError, attempt: 0))
+    }
+
+    func testWebViewZoomUsesTenPercentStepsAndClampsToSupportedRange() {
+        XCTAssertEqual(WebViewZoom.adjusted(1.0, by: 1), 1.1, accuracy: 0.001)
+        XCTAssertEqual(WebViewZoom.adjusted(1.0, by: -1), 0.9, accuracy: 0.001)
+        XCTAssertEqual(WebViewZoom.adjusted(1.96, by: 1), 2.0, accuracy: 0.001)
+        XCTAssertEqual(WebViewZoom.adjusted(0.51, by: -1), 0.5, accuracy: 0.001)
+        XCTAssertEqual(WebViewZoom.clamped(9.0), 2.0, accuracy: 0.001)
+        XCTAssertEqual(WebViewZoom.clamped(0.1), 0.5, accuracy: 0.001)
+    }
+
+    func testDownloadProgressReportsFractionWhenContentLengthIsKnown() {
+        let progress = DownloadRunner.Progress(bytesWritten: 25, totalBytes: 100)
+
+        XCTAssertEqual(progress.fractionCompleted, 0.25)
+    }
+
     func testFindApplicationSkipsMetadataOnlyAppBundles() throws {
         let temporaryDirectory = FileManager.default.temporaryDirectory
             .appendingPathComponent(UUID().uuidString, isDirectory: true)

@@ -4,6 +4,30 @@ import SwiftUI
 
 @MainActor
 final class UpdateManager: ObservableObject {
+    enum AutomaticCheckInterval: String, CaseIterable, Identifiable, Sendable {
+        case hourly
+        case daily
+        case weekly
+
+        var id: String { rawValue }
+
+        var title: String {
+            switch self {
+            case .hourly: return "每小时"
+            case .daily: return "每天"
+            case .weekly: return "每周"
+            }
+        }
+
+        var seconds: TimeInterval {
+            switch self {
+            case .hourly: return 60 * 60
+            case .daily: return 24 * 60 * 60
+            case .weekly: return 7 * 24 * 60 * 60
+            }
+        }
+    }
+
     struct ReleaseAsset: Decodable {
         let name: String
         let browserDownloadURL: URL
@@ -44,7 +68,7 @@ final class UpdateManager: ObservableObject {
     }
 
     static let releasesURL = URL(string: "https://api.github.com/repos/misswell/deepseek-harness-desk/releases/latest")!
-    static let currentVersion = Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "0.2.10"
+    static let currentVersion = Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "0.2.11"
 
     private static let metadataRequestTimeout: TimeInterval = 20
     private static let archiveDownloadTimeout: TimeInterval = 120
@@ -53,16 +77,22 @@ final class UpdateManager: ObservableObject {
     @Published private(set) var isInstalling = false
     @Published private(set) var status = ""
     @Published private(set) var automaticallyChecksForUpdates: Bool
-    @Published private(set) var automaticallyInstallsUpdates: Bool
+    @Published private(set) var automaticCheckInterval: AutomaticCheckInterval
     @Published private(set) var latestReleaseVersion: String?
     @Published private(set) var availableRelease: Release?
+    @Published private(set) var installProgress: Double?
+    @Published private(set) var installStep = ""
+    @Published private(set) var installProgressLabel = ""
+    @Published private(set) var installLogs: [String] = []
 
     private let fileManager = FileManager.default
+    private let logger: LogManager
     private let updateSession: URLSession
     private var hasStarted = false
     private var automaticCheckTask: Task<Void, Never>?
 
-    init() {
+    init(logger: LogManager = LogManager()) {
+        self.logger = logger
         let sessionConfiguration = URLSessionConfiguration.ephemeral
         sessionConfiguration.waitsForConnectivity = false
         sessionConfiguration.timeoutIntervalForRequest = Self.metadataRequestTimeout
@@ -72,11 +102,17 @@ final class UpdateManager: ObservableObject {
         if UserDefaults.standard.object(forKey: "autoCheckForUpdates") == nil {
             UserDefaults.standard.set(true, forKey: "autoCheckForUpdates")
         }
-        if UserDefaults.standard.object(forKey: "autoInstallUpdates") == nil {
-            UserDefaults.standard.set(true, forKey: "autoInstallUpdates")
-        }
+        let intervalRawValue = UserDefaults.standard.string(forKey: "autoCheckInterval")
+        automaticCheckInterval = AutomaticCheckInterval(rawValue: intervalRawValue ?? "") ?? .hourly
         automaticallyChecksForUpdates = UserDefaults.standard.bool(forKey: "autoCheckForUpdates")
-        automaticallyInstallsUpdates = UserDefaults.standard.bool(forKey: "autoInstallUpdates")
+    }
+
+    var showsInstallProgress: Bool {
+        isInstalling || !installLogs.isEmpty
+    }
+
+    var hasAvailableUpdate: Bool {
+        availableRelease != nil && !isInstalling
     }
 
     deinit {
@@ -96,7 +132,17 @@ final class UpdateManager: ObservableObject {
         automaticCheckTask = Task { @MainActor [weak self] in
             try? await Task.sleep(for: .seconds(3))
             guard !Task.isCancelled, let self else { return }
-            await self.checkForUpdates(interactive: false, automaticallyInstall: true)
+            await self.checkForUpdates(interactive: false)
+
+            while !Task.isCancelled {
+                do {
+                    try await Task.sleep(for: .seconds(self.automaticCheckInterval.seconds))
+                } catch {
+                    break
+                }
+                guard !Task.isCancelled else { break }
+                await self.checkForUpdates(interactive: false)
+            }
             self.automaticCheckTask = nil
         }
     }
@@ -112,15 +158,16 @@ final class UpdateManager: ObservableObject {
         }
     }
 
-    func setAutomaticInstallation(_ enabled: Bool) {
-        automaticallyInstallsUpdates = enabled
-        UserDefaults.standard.set(enabled, forKey: "autoInstallUpdates")
+    func setAutomaticCheckInterval(_ interval: AutomaticCheckInterval) {
+        guard automaticCheckInterval != interval else { return }
+        automaticCheckInterval = interval
+        UserDefaults.standard.set(interval.rawValue, forKey: "autoCheckInterval")
+        automaticCheckTask?.cancel()
+        automaticCheckTask = nil
+        scheduleAutomaticCheck()
     }
 
-    func checkForUpdates(
-        interactive: Bool = true,
-        automaticallyInstall: Bool = false
-    ) async {
+    func checkForUpdates(interactive: Bool = true) async {
         guard !isChecking, !isInstalling else { return }
         isChecking = true
         status = "正在检查更新…"
@@ -160,11 +207,6 @@ final class UpdateManager: ObservableObject {
             }
             availableRelease = release
             status = "发现新版本 \(release.version)"
-            if automaticallyInstall && automaticallyInstallsUpdates {
-                status = "发现新版本 \(release.version)，准备自动安装…"
-                await installAvailableUpdate(automatically: true)
-                return
-            }
             if interactive {
                 showUpdateAlert(for: release)
             }
@@ -187,53 +229,71 @@ final class UpdateManager: ObservableObject {
               let asset = release.applicationArchive else { return }
 
         isInstalling = true
-        status = "正在下载 DeepSeek Harness Desk \(release.version)…（最多 120 秒）"
+        beginInstallation(for: release.version)
         defer { isInstalling = false }
 
         do {
-            let (temporaryURL, response) = try await downloadArchive(from: asset.browserDownloadURL)
+            let updateRoot = fileManager.temporaryDirectory
+                .appendingPathComponent("DeepSeekHarnessDesk-Update-\(UUID().uuidString)", isDirectory: true)
+            try fileManager.createDirectory(at: updateRoot, withIntermediateDirectories: true)
+            defer { try? fileManager.removeItem(at: updateRoot) }
+
+            let archiveURL = updateRoot.appendingPathComponent(asset.name)
+            setInstallStep("正在下载 DeepSeek Harness Desk \(release.version)…")
+            let response = try await downloadArchive(from: asset.browserDownloadURL, to: archiveURL)
             if let httpResponse = response as? HTTPURLResponse,
                !(200..<300).contains(httpResponse.statusCode) {
                 throw UpdateError.server("下载更新失败（HTTP \(httpResponse.statusCode)）")
             }
+            appendInstallLog("下载完成（\(formatBytes(fileSize(at: archiveURL)))）")
 
-            let updateRoot = fileManager.temporaryDirectory
-                .appendingPathComponent("DeepSeekHarnessDesk-Update-\(UUID().uuidString)", isDirectory: true)
-            try fileManager.createDirectory(at: updateRoot, withIntermediateDirectories: true)
-            let archiveURL = updateRoot.appendingPathComponent(asset.name)
-            try fileManager.moveItem(at: temporaryURL, to: archiveURL)
-
-            status = "下载完成，正在校验更新包…"
+            setInstallStep("正在校验更新包…")
             try await validateArchive(at: archiveURL, expectedDigest: asset.digest)
+            appendInstallLog("更新包校验通过")
 
             let extractionURL = updateRoot.appendingPathComponent("extracted", isDirectory: true)
             try fileManager.createDirectory(at: extractionURL, withIntermediateDirectories: true)
-            status = "更新包校验通过，正在解压…"
+            setInstallStep("正在解压更新包…")
             let result = try await ProcessRunner.run(
                 executableURL: URL(fileURLWithPath: "/usr/bin/unzip"),
-                arguments: ["-q", "-o", archiveURL.path, "-d", extractionURL.path]
+                arguments: ["-q", "-o", archiveURL.path, "-d", extractionURL.path],
+                onOutput: { [weak self] output in
+                    Task { @MainActor [weak self] in
+                        self?.appendInstallLogChunk(output)
+                    }
+                }
             )
             guard result.succeeded else {
                 throw UpdateError.server("解压更新失败：\(result.output.trimmingCharacters(in: .whitespacesAndNewlines))")
             }
+            appendInstallLog("更新包解压完成")
 
             guard let updatedApp = Self.findApplication(in: extractionURL) else {
                 throw UpdateError.server("更新包中没有找到 App")
             }
+            setInstallStep("正在验证更新 App…")
             try await validateUpdatedApp(updatedApp, expectedVersion: release.version)
+            appendInstallLog("版本、Bundle ID 和签名校验通过")
 
-            status = "正在安装 DeepSeek Harness Desk \(release.version)…"
+            setInstallStep("正在安装 DeepSeek Harness Desk \(release.version)…")
             try launchReplacementScript(
                 currentApp: Bundle.main.bundleURL,
                 updatedApp: updatedApp,
                 oldProcessID: ProcessInfo.processInfo.processIdentifier
             )
+            installProgress = 1
+            installProgressLabel = "已完成"
+            appendInstallLog("替换程序已启动，App 即将重启")
             status = automatically ? "更新完成，App 即将重启" : "更新已准备，App 即将重启"
             availableRelease = nil
             NSApp.terminate(nil)
         } catch is CancellationError {
+            setInstallStep("更新下载已取消")
+            appendInstallLog("更新已取消")
             status = "更新下载已取消"
         } catch {
+            setInstallStep("安装更新失败")
+            appendInstallLog("失败：\(error.localizedDescription)")
             status = "安装更新失败：\(error.localizedDescription)"
             if automatically {
                 showAlert(
@@ -251,7 +311,7 @@ final class UpdateManager: ObservableObject {
         }
     }
 
-    private func downloadArchive(from url: URL) async throws -> (URL, URLResponse) {
+    private func downloadArchive(from url: URL, to destination: URL) async throws -> URLResponse {
         var request = URLRequest(
             url: url,
             cachePolicy: .reloadIgnoringLocalCacheData,
@@ -259,7 +319,16 @@ final class UpdateManager: ObservableObject {
         )
         request.setValue("DeepSeek Harness Desk/\(Self.currentVersion)", forHTTPHeaderField: "User-Agent")
         request.setValue("application/octet-stream", forHTTPHeaderField: "Accept")
-        return try await updateSession.download(for: request)
+        return try await DownloadRunner.download(
+            request: request,
+            using: updateSession,
+            to: destination,
+            onProgress: { [weak self] progress in
+                Task { @MainActor [weak self] in
+                    self?.updateDownloadProgress(progress)
+                }
+            }
+        )
     }
 
     private func validateArchive(
@@ -326,6 +395,66 @@ final class UpdateManager: ObservableObject {
                 details.isEmpty ? "更新包签名校验失败" : "更新包签名校验失败：\(details)"
             )
         }
+    }
+
+    private func beginInstallation(for version: String) {
+        installProgress = nil
+        installStep = ""
+        installProgressLabel = ""
+        installLogs.removeAll(keepingCapacity: true)
+        appendInstallLog("开始安装 App 更新 \(version)")
+    }
+
+    private func setInstallStep(_ message: String) {
+        installStep = message
+        installProgress = nil
+        installProgressLabel = ""
+        status = message
+        if installLogs.last != message {
+            appendInstallLog(message)
+        }
+    }
+
+    private func updateDownloadProgress(_ progress: DownloadRunner.Progress) {
+        installProgress = progress.fractionCompleted
+        if let totalBytes = progress.totalBytes {
+            installProgressLabel = "\(formatBytes(progress.bytesWritten)) / \(formatBytes(totalBytes))"
+        } else {
+            installProgressLabel = formatBytes(progress.bytesWritten)
+        }
+    }
+
+    private func appendInstallLogChunk(_ output: String) {
+        for line in output
+            .replacingOccurrences(of: "\r", with: "\n")
+            .split(whereSeparator: \.isNewline)
+            .map(String.init)
+            .map({ $0.trimmingCharacters(in: .whitespacesAndNewlines) })
+            where !line.isEmpty {
+            appendInstallLog(line)
+        }
+    }
+
+    private func appendInstallLog(_ message: String) {
+        let normalized = message.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !normalized.isEmpty else { return }
+        installLogs.append(normalized)
+        if installLogs.count > 120 {
+            installLogs.removeFirst(installLogs.count - 120)
+        }
+        logger.append("[App 更新] \(normalized)", to: .update)
+    }
+
+    private func fileSize(at url: URL) -> Int64 {
+        guard let attributes = try? fileManager.attributesOfItem(atPath: url.path),
+              let size = attributes[.size] as? NSNumber else {
+            return 0
+        }
+        return size.int64Value
+    }
+
+    private func formatBytes(_ bytes: Int64) -> String {
+        ByteCountFormatter.string(fromByteCount: bytes, countStyle: .file)
     }
 
     private func showUpdateAlert(for release: Release) {

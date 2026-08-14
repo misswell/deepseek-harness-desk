@@ -46,6 +46,30 @@ struct HarnessWebView: NSViewRepresentable {
             self.localHost = localHost
         }
 
+        func webView(_ webView: WKWebView, didStartProvisionalNavigation navigation: WKNavigation?) {
+            controller.navigationDidStart()
+        }
+
+        func webView(_ webView: WKWebView, didFinish navigation: WKNavigation?) {
+            controller.navigationDidFinish()
+        }
+
+        func webView(
+            _ webView: WKWebView,
+            didFailProvisionalNavigation navigation: WKNavigation?,
+            withError error: Error
+        ) {
+            controller.navigationDidFail(with: error)
+        }
+
+        func webView(
+            _ webView: WKWebView,
+            didFail navigation: WKNavigation?,
+            withError error: Error
+        ) {
+            controller.navigationDidFail(with: error)
+        }
+
         func webView(
             _ webView: WKWebView,
             decidePolicyFor navigationAction: WKNavigationAction,

@@ -35,6 +35,23 @@ struct DeepSeekHarnessDeskApp: App {
         .windowStyle(.hiddenTitleBar)
         .commands {
             CommandMenu("View") {
+                Button("放大界面") {
+                    appState.webViewController.zoomIn()
+                }
+                .keyboardShortcut("+", modifiers: [.command])
+
+                Button("缩小界面") {
+                    appState.webViewController.zoomOut()
+                }
+                .keyboardShortcut("-", modifiers: [.command])
+
+                Button("恢复默认大小") {
+                    appState.webViewController.resetZoom()
+                }
+                .keyboardShortcut("0", modifiers: [.command])
+
+                Divider()
+
                 Button("Reload") {
                     appState.webViewController.reload()
                 }

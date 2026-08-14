@@ -25,13 +25,23 @@ struct HarnessErrorView: View {
                         .font(.callout)
                         .foregroundStyle(.secondary)
 
-                    if runtimeManager.isInstalling {
-                        ProgressView()
-                            .frame(width: 260)
-                        Text(runtimeManager.installationMessage)
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
-                    } else {
+                    if runtimeManager.showsInstallProgress {
+                        InstallationProgressCard(
+                            title: "安装内置 Runtime",
+                            step: runtimeManager.installStep,
+                            progress: runtimeManager.installProgress,
+                            progressLabel: runtimeManager.installProgressLabel,
+                            logs: runtimeManager.installLogs,
+                            isActive: runtimeManager.isInstalling,
+                            hasError: {
+                                if case .failed = runtimeManager.installState { return true }
+                                return false
+                            }()
+                        )
+                        .frame(maxWidth: 520)
+                    }
+
+                    if !runtimeManager.isInstalling {
                         Button("一键安装运行时") {
                             Task {
                                 await runtimeManager.install()
