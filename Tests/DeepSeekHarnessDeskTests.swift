@@ -193,6 +193,23 @@ final class DeepSeekHarnessDeskTests: XCTestCase {
     }
 
     @MainActor
+    func testMainWindowCloseHidesInsteadOfDestroyingWindow() {
+        let delegate = AppDelegate()
+        let window = NSWindow(
+            contentRect: NSRect(x: 0, y: 0, width: 400, height: 300),
+            styleMask: [.titled, .closable],
+            backing: .buffered,
+            defer: false
+        )
+        delegate.register(mainWindow: window)
+
+        XCTAssertFalse(
+            delegate.windowShouldClose(window),
+            "Closing the main window must hide it so the Dock click can bring it back."
+        )
+    }
+
+    @MainActor
     func testWebKitPolicyCancellationDoesNotShowLoadError() {
         let controller = WebViewController()
         let webView = WKWebView(frame: .zero)

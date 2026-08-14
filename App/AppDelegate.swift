@@ -91,7 +91,15 @@ final class WindowChromeView: NSView {
 
         if isMainWindow {
             installWindowDragOverlay(in: window)
+            if let closeButton = window.standardWindowButton(.closeButton) {
+                closeButton.target = self
+                closeButton.action = #selector(hideMainWindowFromCloseButton(_:))
+            }
         }
+    }
+
+    @objc private func hideMainWindowFromCloseButton(_ sender: Any?) {
+        window?.orderOut(nil)
     }
 
     private func installWindowDragOverlay(in window: NSWindow) {
@@ -184,7 +192,7 @@ final class ApplicationTerminationCoordinator {
 }
 
 @MainActor
-final class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject {
+final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, ObservableObject {
     static let dockIconPreferenceKey = "showDockIcon"
     static let openMainWindowNotification = Notification.Name("com.deepseek-harness-desk.open-main-window")
 
@@ -231,6 +239,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject {
     func register(mainWindow: NSWindow) {
         self.mainWindow = mainWindow
         mainWindow.isReleasedWhenClosed = false
+        mainWindow.delegate = self
+    }
+
+    /// Hide the main window instead of closing it. SwiftUI cannot reliably
+    /// recreate a destroyed WindowGroup window later, so the Dock click needs
+    /// the same window object to remain alive and simply be shown again.
+    func windowShouldClose(_ sender: NSWindow) -> Bool {
+        guard sender === mainWindow else { return true }
+        sender.orderOut(nil)
+        return false
     }
 
     /// Prepares the App for the update replacement path.
