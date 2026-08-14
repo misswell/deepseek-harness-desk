@@ -201,7 +201,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject {
     }
 
     func openMainWindow(forceReload: Bool = true) {
-        guard let window = mainWindow ?? NSApp.windows.first(where: { $0.canBecomeKey }) else {
+        guard let window = mainWindow else {
             guard !pendingWindowOpen else { return }
             pendingWindowOpen = true
             DispatchQueue.main.async { [weak self] in
@@ -222,13 +222,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject {
 
     func applicationShouldHandleReopen(
         _ sender: NSApplication,
-        hasVisibleWindows flag: Bool
+        hasVisibleWindows _: Bool
     ) -> Bool {
-        if !flag {
-            openMainWindow(forceReload: true)
-            return false
-        }
-        return true
+        // `hasVisibleWindows` also counts the Settings scene. A Dock click
+        // must still bring the registered main window forward when Settings
+        // is the only visible window.
+        openMainWindow(forceReload: mainWindow?.isVisible != true)
+        return false
     }
 
     func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool {

@@ -108,6 +108,23 @@ final class DeepSeekHarnessDeskTests: XCTestCase {
     }
 
     @MainActor
+    func testDockReopenHandlesReopenWhenOnlySettingsWindowIsVisible() {
+        let delegate = AppDelegate()
+        let mainWindow = NSWindow(
+            contentRect: .zero,
+            styleMask: [.titled, .closable],
+            backing: .buffered,
+            defer: true
+        )
+        delegate.register(mainWindow: mainWindow)
+
+        XCTAssertFalse(
+            delegate.applicationShouldHandleReopen(NSApp, hasVisibleWindows: true),
+            "A visible Settings window must not prevent the Dock click from opening the main window."
+        )
+    }
+
+    @MainActor
     func testWebKitPolicyCancellationDoesNotShowLoadError() {
         let controller = WebViewController()
         let webView = WKWebView(frame: .zero)
