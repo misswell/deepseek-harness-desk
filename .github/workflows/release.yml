@@ -1,4 +1,4 @@
-name: Release macOS app
+name: Release Tauri app
 
 on:
   push:
@@ -14,7 +14,7 @@ permissions:
   contents: write
 
 jobs:
-  release:
+  release-macos:
     runs-on: macos-15
     env:
       RELEASE_TAG: ${{ inputs.release_tag || github.ref_name }}
@@ -26,115 +26,39 @@ jobs:
           fetch-depth: 0
           ref: ${{ inputs.release_tag || github.ref }}
 
-      - name: Import Developer ID signing certificate
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+          cache-dependency-path: tauri-app/package-lock.json
+
+      - name: Set up Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Install frontend dependencies
+        run: npm ci --prefix tauri-app
+
+      - name: Build and publish Tauri release
+        uses: tauri-apps/tauri-action@v0
         env:
-          P12_BASE64: ${{ secrets.APPLE_CERTIFICATE_P12 }}
-          P12_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
-          APPLE_DEVELOPER_ID: ${{ secrets.APPLE_DEVELOPER_ID }}
-        run: |
-          : "${P12_BASE64:?APPLE_CERTIFICATE_P12 is required}"
-          : "${P12_PASSWORD:?APPLE_CERTIFICATE_PASSWORD is required}"
-          : "${APPLE_DEVELOPER_ID:?APPLE_DEVELOPER_ID is required}"
-          keychain="$RUNNER_TEMP/deepseek-signing.keychain-db"
-          p12="$RUNNER_TEMP/deepseek-developer-id.p12"
-          keychain_password="$(openssl rand -hex 32)"
-          printf '%s' "$P12_BASE64" | base64 -D > "$p12"
-          security create-keychain -p "$keychain_password" "$keychain"
-          security set-keychain-settings -lut 21600 "$keychain"
-          security unlock-keychain -p "$keychain_password" "$keychain"
-          security import "$p12" -k "$keychain" -P "$P12_PASSWORD" \
-            -T /usr/bin/codesign -T /usr/bin/security
-          security list-keychains -d user -s "$keychain" /Library/Keychains/System.keychain
-          security default-keychain -s "$keychain"
-          security set-key-partition-list -S apple-tool:,apple:,codesign: \
-            -s -k "$keychain_password" "$keychain"
-          security find-identity -v -p codesigning "$keychain"
-          security find-identity -v -p codesigning "$keychain" | grep -F "$APPLE_DEVELOPER_ID"
-
-      - name: Archive Release build
-        env:
-          APPLE_DEVELOPER_ID: ${{ secrets.APPLE_DEVELOPER_ID }}
-        run: |
-          xcodebuild archive \
-            -project DeepSeekHarnessDesk.xcodeproj \
-            -scheme DeepSeekHarnessDesk \
-            -configuration Release \
-            -archivePath build-release/DeepSeekHarnessDesk.xcarchive \
-            -destination "generic/platform=macOS" \
-            -derivedDataPath build-release/DerivedData \
-            CODE_SIGN_IDENTITY="$APPLE_DEVELOPER_ID"
-
-      - name: Export Developer ID app
-        run: |
-          xcodebuild -exportArchive \
-            -archivePath build-release/DeepSeekHarnessDesk.xcarchive \
-            -exportPath build-release/export \
-            -exportOptionsPlist ExportOptions-DeveloperID.plist
-
-      - name: Create notarization archive
-        id: package
-        run: |
-          app="build-release/export/DeepSeek Harness Desk.app"
-          version="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "$app/Contents/Info.plist")"
-          zip="build-release/export/DeepSeekHarnessDesk-${version}-macOS-universal.zip"
-          ditto -c -k --sequesterRsrc --keepParent "$app" "$zip"
-          echo "app=$app" >> "$GITHUB_OUTPUT"
-          echo "zip=$zip" >> "$GITHUB_OUTPUT"
-
-      - name: Notarize and staple
-        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE_P12 }}
+          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+          APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_DEVELOPER_ID }}
           APPLE_ID: ${{ secrets.APPLE_ID }}
-          APPLE_APP_SPECIFIC_PASSWORD: ${{ secrets.APPLE_APP_SPECIFIC_PASSWORD }}
+          APPLE_PASSWORD: ${{ secrets.APPLE_APP_SPECIFIC_PASSWORD }}
           APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
-          APPLE_API_KEY_ID: ${{ secrets.APPLE_API_KEY_ID }}
-          APPLE_API_ISSUER_ID: ${{ secrets.APPLE_API_ISSUER_ID }}
-          APPLE_API_PRIVATE_KEY: ${{ secrets.APPLE_API_PRIVATE_KEY }}
-        run: |
-          if [[ -n "${APPLE_API_KEY_ID:-}" || -n "${APPLE_API_ISSUER_ID:-}" || -n "${APPLE_API_PRIVATE_KEY:-}" ]]; then
-            : "${APPLE_API_KEY_ID:?APPLE_API_KEY_ID is required when using App Store Connect API key authentication}"
-            : "${APPLE_API_ISSUER_ID:?APPLE_API_ISSUER_ID is required when using App Store Connect API key authentication}"
-            : "${APPLE_API_PRIVATE_KEY:?APPLE_API_PRIVATE_KEY is required when using App Store Connect API key authentication}"
-            api_key="$RUNNER_TEMP/AuthKey_${APPLE_API_KEY_ID}.p8"
-            umask 077
-            printf '%s' "$APPLE_API_PRIVATE_KEY" > "$api_key"
-            xcrun notarytool submit "${{ steps.package.outputs.zip }}" \
-              --key "$api_key" \
-              --key-id "$APPLE_API_KEY_ID" \
-              --issuer "$APPLE_API_ISSUER_ID" \
-              --wait
-          else
-            : "${APPLE_ID:?Set APPLE_API_KEY_ID/APPLE_API_ISSUER_ID/APPLE_API_PRIVATE_KEY, or the legacy APPLE_ID/APPLE_APP_SPECIFIC_PASSWORD/APPLE_TEAM_ID secrets}"
-            : "${APPLE_APP_SPECIFIC_PASSWORD:?APPLE_APP_SPECIFIC_PASSWORD is required for legacy Apple ID authentication}"
-            : "${APPLE_TEAM_ID:?APPLE_TEAM_ID is required for legacy Apple ID authentication}"
-            xcrun notarytool submit "${{ steps.package.outputs.zip }}" \
-              --apple-id "$APPLE_ID" \
-              --password "$APPLE_APP_SPECIFIC_PASSWORD" \
-              --team-id "$APPLE_TEAM_ID" \
-              --wait
-          fi
-          xcrun stapler staple "${{ steps.package.outputs.app }}"
-          xcrun stapler validate "${{ steps.package.outputs.app }}"
-          rm -f "${{ steps.package.outputs.zip }}"
-          ditto -c -k --sequesterRsrc --keepParent \
-            "${{ steps.package.outputs.app }}" \
-            "${{ steps.package.outputs.zip }}"
+        with:
+          projectPath: tauri-app
+          tagName: ${{ env.RELEASE_TAG }}
+          releaseName: DeepSeek Harness Desk ${{ env.RELEASE_TAG }}
+          releaseBody: |
+            Tauri v2 desktop release.
 
-      - name: Verify notarized app
-        run: |
-          codesign --verify --deep --strict "${{ steps.package.outputs.app }}"
-          spctl --assess --type execute --verbose=4 "${{ steps.package.outputs.app }}"
-
-      - name: Publish GitHub release
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          if gh release view "$RELEASE_TAG" >/dev/null 2>&1; then
-            gh release upload "$RELEASE_TAG" \
-              "${{ steps.package.outputs.zip }}#DeepSeek Harness Desk for macOS" \
-              --clobber
-          else
-            gh release create "$RELEASE_TAG" \
-              --title "DeepSeek Harness Desk $RELEASE_TAG" \
-              --generate-notes \
-              "${{ steps.package.outputs.zip }}#DeepSeek Harness Desk for macOS"
-          fi
+            - Single-window desktop shell with native title-bar dragging
+            - macOS 15 transparent rounded window and menu-bar restore
+            - Harness start/stop/restart, port scanning, health checks, and logs
+            - macOS, Windows, and Linux icon assets
+          releaseDraft: false
+          prerelease: false
