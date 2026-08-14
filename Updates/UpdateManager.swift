@@ -68,7 +68,7 @@ final class UpdateManager: ObservableObject {
     }
 
     static let releasesURL = URL(string: "https://api.github.com/repos/misswell/deepseek-harness-desk/releases/latest")!
-    static let currentVersion = Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "0.2.12"
+    static let currentVersion = Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "0.2.13"
 
     private static let metadataRequestTimeout: TimeInterval = 20
     private static let archiveDownloadTimeout: TimeInterval = 120
@@ -236,7 +236,12 @@ final class UpdateManager: ObservableObject {
             let updateRoot = fileManager.temporaryDirectory
                 .appendingPathComponent("DeepSeekHarnessDesk-Update-\(UUID().uuidString)", isDirectory: true)
             try fileManager.createDirectory(at: updateRoot, withIntermediateDirectories: true)
-            defer { try? fileManager.removeItem(at: updateRoot) }
+            var replacementOwnsUpdateRoot = false
+            defer {
+                if !replacementOwnsUpdateRoot {
+                    try? fileManager.removeItem(at: updateRoot)
+                }
+            }
 
             let archiveURL = updateRoot.appendingPathComponent(asset.name)
             setInstallStep("正在下载 DeepSeek Harness Desk \(release.version)…")
@@ -279,8 +284,10 @@ final class UpdateManager: ObservableObject {
             try launchReplacementScript(
                 currentApp: Bundle.main.bundleURL,
                 updatedApp: updatedApp,
-                oldProcessID: ProcessInfo.processInfo.processIdentifier
+                oldProcessID: ProcessInfo.processInfo.processIdentifier,
+                updateRoot: updateRoot
             )
+            replacementOwnsUpdateRoot = true
             installProgress = 1
             installProgressLabel = "已完成"
             appendInstallLog("替换程序已启动，App 即将重启")
@@ -508,7 +515,8 @@ final class UpdateManager: ObservableObject {
     private func launchReplacementScript(
         currentApp: URL,
         updatedApp: URL,
-        oldProcessID: Int32
+        oldProcessID: Int32,
+        updateRoot: URL
     ) throws {
         let scriptURL = fileManager.temporaryDirectory
             .appendingPathComponent("deepseek-harness-desk-update-\(UUID().uuidString).sh")
@@ -518,8 +526,15 @@ final class UpdateManager: ObservableObject {
         current_app="$1"
         updated_app="$2"
         old_pid="$3"
+        cleanup_root="$4"
         script_path="$0"
         backup_app="${current_app}.backup.${old_pid}.$$"
+
+        cleanup_update_resources() {
+            /bin/rm -rf "$cleanup_root"
+            /bin/rm -f "$script_path"
+        }
+        trap cleanup_update_resources EXIT
 
         wait_count=0
         while kill -0 "$old_pid" 2>/dev/null; do
@@ -571,7 +586,6 @@ final class UpdateManager: ObservableObject {
         (
             sleep 10
             /bin/rm -rf "$backup_app"
-            /bin/rm -f "$script_path"
         ) >/dev/null 2>&1 &
         """
         try Data(script.utf8).write(to: scriptURL, options: .atomic)
@@ -582,7 +596,13 @@ final class UpdateManager: ObservableObject {
 
         let process = Process()
         process.executableURL = URL(fileURLWithPath: "/bin/sh")
-        process.arguments = [scriptURL.path, currentApp.path, updatedApp.path, String(oldProcessID)]
+        process.arguments = [
+            scriptURL.path,
+            currentApp.path,
+            updatedApp.path,
+            String(oldProcessID),
+            updateRoot.path
+        ]
         process.standardOutput = FileHandle.nullDevice
         process.standardError = FileHandle.nullDevice
         try process.run()
