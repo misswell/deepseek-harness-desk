@@ -1,6 +1,6 @@
 [package]
 name = "deepseek-harness-desk"
-version = "0.3.0"
+version = "0.3.1"
 description = "Cross-platform DeepSeek Harness desktop client"
 authors = ["DeepSeek Harness Desk contributors"]
 edition = "2021"
@@ -24,7 +24,12 @@ tauri-build = { version = "2", features = [] }
 [dependencies]
 tauri = { version = "2", features = ["tray-icon", "macos-private-api"] }
 tauri-plugin-opener = "2"
+tauri-plugin-single-instance = "2.4.3"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
 tokio = { version = "1", features = ["time"] }
+
+[target.'cfg(target_os = "macos")'.dependencies]
+objc2 = "0.6"
+objc2-app-kit = { version = "0.3", default-features = false, features = ["std", "NSApplication", "NSRunningApplication"] }

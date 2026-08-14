@@ -5,7 +5,7 @@
   font-synthesis: none;
   text-rendering: optimizeLegibility;
   -webkit-font-smoothing: antialiased;
-  --surface: rgba(248, 250, 255, 0.96);
+  --surface: rgba(248, 250, 255, 0.74);
   --surface-strong: #ffffff;
   --surface-soft: #f2f5fb;
   --line: rgba(39, 56, 92, 0.11);
@@ -59,6 +59,8 @@ input:focus-visible {
   border-radius: 18px;
   background: var(--surface);
   box-shadow: var(--shadow);
+  -webkit-backdrop-filter: blur(24px) saturate(130%);
+  backdrop-filter: blur(24px) saturate(130%);
 }
 
 .titlebar {
@@ -69,8 +71,10 @@ input:focus-visible {
   gap: 14px;
   padding: 0 16px 0 20px;
   border-bottom: 1px solid var(--line);
-  background: rgba(255, 255, 255, 0.46);
-  -webkit-app-region: drag;
+  background: rgba(255, 255, 255, 0.2);
+  -webkit-backdrop-filter: blur(20px) saturate(135%);
+  backdrop-filter: blur(20px) saturate(135%);
+  -webkit-app-region: no-drag;
   user-select: none;
 }
 
@@ -78,7 +82,7 @@ input:focus-visible {
 .brand-copy,
 .titlebar-spacer,
 [data-tauri-drag-region] {
-  -webkit-app-region: drag;
+  -webkit-app-region: no-drag;
 }
 
 .brand {
@@ -145,7 +149,8 @@ input:focus-visible {
   background: rgba(255, 255, 255, 0.58);
   font-size: 11px;
   font-weight: 700;
-  -webkit-app-region: no-drag;
+  -webkit-app-region: no-drag !important;
+  cursor: default;
 }
 
 .status-dot,
@@ -693,6 +698,12 @@ button:disabled {
   align-items: flex-start;
 }
 
+.setting-actions {
+  display: flex;
+  flex: 0 0 auto;
+  gap: 7px;
+}
+
 .setting-row > span {
   display: flex;
   min-width: 0;
@@ -712,6 +723,10 @@ button:disabled {
   line-height: 1.5;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+#runtime-install-status.active {
+  color: #35997e;
 }
 
 .setting-row input[type="checkbox"] {
@@ -809,7 +824,7 @@ button:disabled {
 @media (prefers-color-scheme: dark) {
   :root {
     color: #e5eafd;
-    --surface: rgba(22, 28, 46, 0.97);
+    --surface: rgba(22, 28, 46, 0.78);
     --surface-strong: #202941;
     --surface-soft: #1b243a;
     --line: rgba(197, 210, 255, 0.12);
@@ -830,7 +845,11 @@ button:disabled {
   .secondary-button,
   .toolbar-button,
   .setting-row {
-    background: rgba(27, 35, 57, 0.82);
+    background: rgba(27, 35, 57, 0.56);
+  }
+
+  .titlebar {
+    background: rgba(27, 35, 57, 0.22);
   }
 
   .sidebar {

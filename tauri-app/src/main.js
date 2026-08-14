@@ -11,10 +11,14 @@ const elements = {
   portValue: document.querySelector("#port-value"),
   runtimeValue: document.querySelector("#runtime-value"),
   settingsRuntimePath: document.querySelector("#settings-runtime-path"),
+  runtimeInstallButton: document.querySelector("#runtime-install-button"),
+  runtimeInstallStatus: document.querySelector("#runtime-install-status"),
   startButton: document.querySelector("#start-button"),
+  startButtonLabel: document.querySelector("#start-button-label"),
   restartButton: document.querySelector("#restart-button"),
   stopButton: document.querySelector("#stop-button"),
   emptyStartButton: document.querySelector("#empty-start-button"),
+  emptyStartButtonLabel: document.querySelector("#empty-start-button-label"),
   emptyTitle: document.querySelector("#empty-title"),
   emptyMessage: document.querySelector("#empty-message"),
   emptyState: document.querySelector("#empty-state"),
@@ -48,6 +52,7 @@ const state = {
   busy: false,
   frameUrl: "",
   toastTimer: null,
+  runtimeProgress: "",
 };
 
 function errorMessage(error) {
@@ -71,10 +76,14 @@ function setBusy(busy) {
   state.busy = busy;
   elements.startButton.disabled = busy || state.phase === "running";
   elements.emptyStartButton.disabled = busy || state.phase === "running";
+  elements.runtimeInstallButton.disabled = busy || state.runtime?.installing === true;
   elements.restartButton.disabled = busy || !state.status?.running;
   elements.stopButton.disabled = busy || !state.status?.running;
   elements.startButton.classList.toggle("loading", busy);
   elements.startButton.querySelector(".button-icon").textContent = busy ? "◌" : "▶";
+  const installLabel = state.runtime && !state.runtime.available ? "安装并启动" : "启动 Harness";
+  elements.startButtonLabel.textContent = installLabel;
+  elements.emptyStartButtonLabel.textContent = installLabel;
 }
 
 function setToast(message, isError = false) {
@@ -135,11 +144,26 @@ function renderStatus() {
 
 function renderRuntime() {
   if (!state.runtime) return;
-  const label = state.runtime.available ? "已找到 dsh" : "未找到 dsh";
+  const label = state.runtime.installing
+    ? "正在安装运行时"
+    : state.runtime.available
+      ? "已找到 dsh"
+      : "需要安装运行时";
   elements.runtimeValue.textContent = label;
   elements.runtimeValue.classList.toggle("available", state.runtime.available);
   elements.runtimeValue.classList.toggle("missing", !state.runtime.available);
-  elements.settingsRuntimePath.textContent = state.runtime.path || "未找到。请安装 dsh 或设置 DSH_BIN。";
+  elements.settingsRuntimePath.textContent =
+    state.runtime.path || state.runtime.message || "首次启动会自动安装 Node.js 和 dsh。";
+  elements.runtimeInstallStatus.textContent =
+    state.runtime.message || (state.runtime.available ? "运行时已就绪。" : "点击安装，应用会自动准备运行环境。");
+  elements.runtimeInstallButton.classList.toggle("hidden", state.runtime.available && !state.runtime.installing);
+  elements.runtimeInstallButton.textContent = state.runtime.installing ? "安装中…" : "安装运行时";
+  if (state.runtime.installing) {
+    elements.runtimeInstallStatus.classList.add("active");
+  } else {
+    elements.runtimeInstallStatus.classList.remove("active");
+  }
+  setBusy(state.busy);
 }
 
 function renderLogs() {
@@ -185,6 +209,33 @@ async function refreshRuntime() {
   }
 }
 
+async function installRuntime() {
+  if (state.busy) return false;
+  state.busy = true;
+  if (state.runtime) state.runtime.installing = true;
+  elements.runtimeInstallStatus.textContent = "正在准备运行时…";
+  setBusy(true);
+  try {
+    state.runtime = await call("install_runtime");
+    renderRuntime();
+    setToast("运行时安装完成，可以启动 Harness");
+    return true;
+  } catch (error) {
+    const message = errorMessage(error);
+    if (state.runtime) {
+      state.runtime.installing = false;
+      state.runtime.message = message;
+    }
+    renderRuntime();
+    setToast(message, true);
+    return false;
+  } finally {
+    state.busy = false;
+    await refreshRuntime();
+    setBusy(false);
+  }
+}
+
 async function refreshStatus() {
   try {
     const status = await call("harness_status");
@@ -224,6 +275,10 @@ async function startHarness() {
   setBusy(true);
   renderStatus();
   try {
+    if (!state.runtime?.available) {
+      state.runtime = await call("install_runtime");
+      renderRuntime();
+    }
     state.status = await call("start_harness");
     state.phase = state.status.running ? "running" : "idle";
     setToast("Harness 已启动");
@@ -288,9 +343,9 @@ async function toggleDockIcon() {
   }
 }
 
-async function windowAction(command) {
+async function windowAction(command, args) {
   try {
-    return await call(command);
+    return await call(command, args);
   } catch (error) {
     setToast(errorMessage(error), true);
     return null;
@@ -326,6 +381,7 @@ function bindEvents() {
   elements.closeSettingsButton.addEventListener("click", () => showDrawer(null));
   elements.dockIconToggle.addEventListener("change", toggleDockIcon);
   elements.refreshRuntimeButton.addEventListener("click", refreshRuntime);
+  elements.runtimeInstallButton.addEventListener("click", installRuntime);
 
   elements.minimizeButton.addEventListener("click", () => windowAction("window_minimize"));
   elements.maximizeButton.addEventListener("click", () => windowAction("window_toggle_maximize"));
@@ -336,12 +392,15 @@ function bindEvents() {
     elements.frameLoading.classList.remove("hidden");
   });
 
-  // The native Tauri drag region handles ordinary dragging and double-click
-  // maximize. This fallback covers empty header pixels in older WebViews.
+  // Keep every non-interactive pixel of the custom title bar draggable. The
+  // CSS drag region is not consistently honored by WebKit when a child view
+  // sits above it, so explicitly handing the gesture to Tauri is the reliable
+  // path on macOS 15 and Windows.
   document.querySelector(".titlebar").addEventListener("mousedown", (event) => {
-    if (event.button === 0 && event.target === event.currentTarget) {
-      windowAction("window_start_dragging");
-    }
+    if (event.button !== 0) return;
+    if (event.target.closest("button, input, select, textarea, a")) return;
+    event.preventDefault();
+    windowAction("window_start_dragging");
   });
 }
 
@@ -352,6 +411,16 @@ async function listenForOutput() {
     if (state.logs.length > 500) state.logs.shift();
     renderLogs();
   });
+  await listen("runtime-progress", (event) => {
+    const progress = event.payload || {};
+    state.runtimeProgress = progress.message || "";
+    elements.runtimeInstallStatus.textContent = state.runtimeProgress;
+    if (state.runtime) {
+      state.runtime.installing = !progress.done;
+      state.runtime.message = state.runtimeProgress;
+      renderRuntime();
+    }
+  });
 }
 
 async function initialize() {
@@ -361,6 +430,9 @@ async function initialize() {
   renderLogs();
   await listenForOutput();
   await Promise.all([refreshStatus(), refreshRuntime(), loadLogs()]);
+  if (!elements.dockIconToggle.checked) {
+    await windowAction("set_dock_visibility", { visible: false });
+  }
   window.setInterval(refreshStatus, 2500);
 }
 

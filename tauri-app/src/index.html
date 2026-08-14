@@ -5,6 +5,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <meta name="color-scheme" content="light dark" />
     <title>DeepSeek Harness Desk</title>
+    <link rel="stylesheet" href="/styles.css" />
     <script type="module" src="/main.js" defer></script>
   </head>
   <body>
@@ -18,7 +19,7 @@
           </div>
         </div>
         <div class="titlebar-spacer" data-tauri-drag-region></div>
-        <div class="titlebar-status" id="titlebar-status">
+        <div class="titlebar-status" id="titlebar-status" data-tauri-drag-region>
           <span class="status-dot"></span>
           <span id="titlebar-status-text">未启动</span>
         </div>
@@ -47,7 +48,7 @@
             <div class="control-actions">
               <button class="primary-button" id="start-button">
                 <span class="button-icon">▶</span>
-                启动 Harness
+                <span id="start-button-label">启动 Harness</span>
               </button>
               <button class="secondary-button" id="restart-button" disabled>重启</button>
               <button class="ghost-button" id="stop-button" disabled>停止</button>
@@ -104,7 +105,9 @@
               <div class="empty-orb"><span>H</span></div>
               <h3 id="empty-title">Harness 尚未启动</h3>
               <p id="empty-message">启动后，这里会承载本机的 Harness Web UI。</p>
-              <button class="primary-button compact" id="empty-start-button">启动 Harness</button>
+              <button class="primary-button compact" id="empty-start-button">
+                <span id="empty-start-button-label">启动 Harness</span>
+              </button>
             </div>
             <div class="frame-container hidden" id="frame-container">
               <div class="frame-loading" id="frame-loading">正在加载 Harness 页面…</div>
@@ -143,11 +146,18 @@
                 <input type="checkbox" id="dock-icon-toggle" />
               </label>
               <div class="setting-row stacked">
-                <span><strong>dsh 可执行文件</strong><small id="settings-runtime-path">检查中…</small></span>
-                <button class="toolbar-button" id="refresh-runtime-button">重新检查</button>
+                <span>
+                  <strong>内置运行时</strong>
+                  <small id="settings-runtime-path">检查中…</small>
+                  <small id="runtime-install-status">正在检查运行时…</small>
+                </span>
+                <div class="setting-actions">
+                  <button class="toolbar-button hidden" id="runtime-install-button">安装运行时</button>
+                  <button class="toolbar-button" id="refresh-runtime-button">重新检查</button>
+                </div>
               </div>
               <div class="setting-note">
-                如果系统找不到 dsh，可安装 <code>@deepseek-ai/dsh</code>，或通过 <code>DSH_BIN</code> 指定可执行文件路径。
+                无需预装 Node.js。首次启动会下载隔离的 Node.js 和 DeepSeek Harness；也支持通过 <code>DSH_BIN</code> 使用已有 dsh。
               </div>
             </div>
           </section>
