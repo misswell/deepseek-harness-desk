@@ -71,7 +71,8 @@ private struct UpdatesSettingsView: View {
                         progressLabel: updateManager.installProgressLabel,
                         logs: updateManager.installLogs,
                         isActive: updateManager.isInstalling,
-                        hasError: updateManager.status.contains("失败")
+                        hasError: updateManager.status.contains("失败"),
+                        onClose: { updateManager.dismissInstallProgress() }
                     )
                     .frame(maxHeight: 240)
                 }
@@ -103,7 +104,8 @@ private struct UpdatesSettingsView: View {
                         hasError: {
                             if case .failed = runtimeManager.installState { return true }
                             return false
-                        }()
+                        }(),
+                        onClose: { runtimeManager.dismissInstallProgress() }
                     )
                     .frame(maxHeight: 240)
                 }

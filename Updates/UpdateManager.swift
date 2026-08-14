@@ -68,10 +68,12 @@ final class UpdateManager: ObservableObject {
     }
 
     static let releasesURL = URL(string: "https://api.github.com/repos/misswell/deepseek-harness-desk/releases/latest")!
-    static let currentVersion = Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "0.2.15"
+    static let currentVersion = Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "0.2.16"
 
     private static let metadataRequestTimeout: TimeInterval = 20
     private static let archiveDownloadTimeout: TimeInterval = 120
+    private static let ignoredAppUpdateVersionKey = "ignoredAppUpdateVersion"
+    private static let pendingUpdateResultFilename = "pending-app-update-result.txt"
 
     @Published private(set) var isChecking = false
     @Published private(set) var isInstalling = false
@@ -84,12 +86,14 @@ final class UpdateManager: ObservableObject {
     @Published private(set) var installStep = ""
     @Published private(set) var installProgressLabel = ""
     @Published private(set) var installLogs: [String] = []
+    @Published private(set) var isInstallProgressDismissed = false
 
     private let fileManager = FileManager.default
     private let logger: LogManager
     private let updateSession: URLSession
     private var hasStarted = false
     private var automaticCheckTask: Task<Void, Never>?
+    private var ignoredAppUpdateVersion: String?
 
     init(logger: LogManager = LogManager()) {
         self.logger = logger
@@ -105,14 +109,37 @@ final class UpdateManager: ObservableObject {
         let intervalRawValue = UserDefaults.standard.string(forKey: "autoCheckInterval")
         automaticCheckInterval = AutomaticCheckInterval(rawValue: intervalRawValue ?? "") ?? .hourly
         automaticallyChecksForUpdates = UserDefaults.standard.bool(forKey: "autoCheckForUpdates")
+        ignoredAppUpdateVersion = UserDefaults.standard.string(
+            forKey: Self.ignoredAppUpdateVersionKey
+        )
+        consumePendingUpdateFailure()
     }
 
     var showsInstallProgress: Bool {
-        isInstalling || !installLogs.isEmpty
+        !isInstallProgressDismissed && (isInstalling || !installLogs.isEmpty)
     }
 
     var hasAvailableUpdate: Bool {
         availableRelease != nil && !isInstalling
+    }
+
+    func dismissInstallProgress() {
+        isInstallProgressDismissed = true
+    }
+
+    func dismissAvailableUpdate() {
+        availableRelease = nil
+    }
+
+    func ignoreAvailableUpdate() {
+        guard let release = availableRelease else { return }
+        ignoredAppUpdateVersion = release.version
+        UserDefaults.standard.set(
+            release.version,
+            forKey: Self.ignoredAppUpdateVersionKey
+        )
+        availableRelease = nil
+        status = "已忽略版本 \(release.version)"
     }
 
     deinit {
@@ -205,6 +232,17 @@ final class UpdateManager: ObservableObject {
             guard release.applicationArchive != nil else {
                 throw UpdateError.server("最新 Release 没有可下载的 macOS App 压缩包")
             }
+
+            if let ignoredVersion = ignoredAppUpdateVersion {
+                if !Self.isNewer(release.version, than: ignoredVersion) {
+                    availableRelease = nil
+                    status = "已忽略版本 \(release.version)"
+                    return
+                }
+                ignoredAppUpdateVersion = nil
+                UserDefaults.standard.removeObject(forKey: Self.ignoredAppUpdateVersionKey)
+            }
+
             availableRelease = release
             status = "发现新版本 \(release.version)"
             if interactive {
@@ -405,6 +443,7 @@ final class UpdateManager: ObservableObject {
     }
 
     private func beginInstallation(for version: String) {
+        isInstallProgressDismissed = false
         installProgress = nil
         installStep = ""
         installProgressLabel = ""
@@ -450,6 +489,31 @@ final class UpdateManager: ObservableObject {
             installLogs.removeFirst(installLogs.count - 120)
         }
         logger.append("[App 更新] \(normalized)", to: .update)
+    }
+
+    private var pendingUpdateResultURL: URL {
+        PathUtils.applicationSupportDirectory
+            .appendingPathComponent(Self.pendingUpdateResultFilename)
+    }
+
+    private func consumePendingUpdateFailure() {
+        guard let data = try? Data(contentsOf: pendingUpdateResultURL),
+              let result = String(data: data, encoding: .utf8),
+              result.hasPrefix("failure\n") else {
+            return
+        }
+
+        try? fileManager.removeItem(at: pendingUpdateResultURL)
+        let details = result
+            .dropFirst("failure\n".count)
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        isInstallProgressDismissed = false
+        installStep = "上次更新失败，已回滚"
+        status = "上次更新失败，已回滚到当前版本"
+        appendInstallLog("上次更新未能启动，已回滚到当前版本")
+        if !details.isEmpty {
+            appendInstallLog(details)
+        }
     }
 
     private func fileSize(at url: URL) -> Int64 {
@@ -527,48 +591,98 @@ final class UpdateManager: ObservableObject {
         updated_app="$2"
         old_pid="$3"
         cleanup_root="$4"
+        result_file="$5"
         script_path="$0"
         backup_app="${current_app}.backup.${old_pid}.$$"
+        log_file="$HOME/Library/Logs/DeepSeek Harness Desk/update.log"
+        result_written=0
+
+        /bin/mkdir -p "$(/usr/bin/dirname "$log_file")"
+        log() {
+            /bin/echo "[$(/bin/date '+%Y-%m-%dT%H:%M:%S%z')] [替换程序] $*" >> "$log_file"
+        }
+        write_failure() {
+            /bin/mkdir -p "$(/usr/bin/dirname "$result_file")"
+            /bin/printf 'failure\\n%s\\n' "$1" > "${result_file}.tmp.$$"
+            /bin/mv -f "${result_file}.tmp.$$" "$result_file"
+            result_written=1
+        }
 
         cleanup_update_resources() {
             /bin/rm -rf "$cleanup_root"
             /bin/rm -f "$script_path"
         }
-        trap cleanup_update_resources EXIT
+        trap 'exit_code=$?; if [ "$exit_code" -ne 0 ] && [ "$result_written" -eq 0 ]; then write_failure "替换程序异常退出（退出码 $exit_code）"; fi; cleanup_update_resources' EXIT
+
+        rollback() {
+            log "开始回滚安装结果"
+            if [ -e "$backup_app" ]; then
+                if [ -e "$current_app" ]; then
+                    failed_app="${current_app}.failed.${old_pid}.$$"
+                    /bin/mv "$current_app" "$failed_app" || /bin/rm -rf "$current_app"
+                    log "保留失败版本：$failed_app"
+                fi
+                /bin/mv "$backup_app" "$current_app" || true
+                /usr/bin/open -n "$current_app" >> "$log_file" 2>&1 || true
+            fi
+            log "回滚完成"
+        }
+
+        fail_update() {
+            log "更新失败：$1"
+            write_failure "$1"
+            rollback
+            exit 1
+        }
+
+        log "替换程序已启动，等待旧进程 $old_pid 退出"
 
         wait_count=0
         while kill -0 "$old_pid" 2>/dev/null; do
             if [ "$wait_count" -ge 240 ]; then
-                exit 1
+                fail_update "旧 App 进程未能在 60 秒内退出"
             fi
             sleep 0.25
             wait_count=$((wait_count + 1))
         done
+        log "旧进程已退出"
 
         if [ ! -f "$updated_app/Contents/Info.plist" ]; then
-            exit 1
+            fail_update "更新包中的 App 不完整"
         fi
         if ! /usr/bin/codesign --verify --deep --strict "$updated_app" >/dev/null 2>&1; then
-            exit 1
+            fail_update "更新包签名验证失败"
         fi
+        log "更新 App 签名验证通过"
 
-        /bin/mv "$current_app" "$backup_app"
+        if ! /bin/mv "$current_app" "$backup_app"; then
+            fail_update "无法备份当前 App，可能没有权限写入安装目录"
+        fi
         if ! /bin/mv "$updated_app" "$current_app"; then
-            /bin/mv "$backup_app" "$current_app"
-            exit 1
+            fail_update "无法替换安装目录中的 App"
         fi
+        log "App 文件替换完成"
 
-        if ! /usr/bin/open "$current_app"; then
-            /bin/mv "$current_app" "${current_app}.failed.${old_pid}.$$"
-            /bin/mv "$backup_app" "$current_app"
-            /usr/bin/open "$current_app" >/dev/null 2>&1 || true
-            exit 1
+        if ! /usr/bin/open -n "$current_app" >> "$log_file" 2>&1; then
+            fail_update "新 App 启动命令失败"
         fi
+        log "已请求启动新 App，正在验证新进程"
 
         new_pid=""
         launch_count=0
         while [ "$launch_count" -lt 40 ]; do
-            new_pid=$(/usr/bin/pgrep -x "DeepSeek Harness Desk" | /usr/bin/awk -v old_pid="$old_pid" '$1 != old_pid { print $1; exit }' || true)
+            for candidate_pid in $(/usr/bin/pgrep -x "DeepSeek Harness Desk" || true); do
+                if [ "$candidate_pid" = "$old_pid" ]; then
+                    continue
+                fi
+                candidate_command=$(/bin/ps -p "$candidate_pid" -o command= 2>/dev/null || true)
+                case "$candidate_command" in
+                    "$current_app"/*)
+                        new_pid="$candidate_pid"
+                        break
+                        ;;
+                esac
+            done
             if [ -n "$new_pid" ]; then
                 break
             fi
@@ -577,11 +691,9 @@ final class UpdateManager: ObservableObject {
         done
 
         if [ -z "$new_pid" ]; then
-            /bin/mv "$current_app" "${current_app}.failed.${old_pid}.$$"
-            /bin/mv "$backup_app" "$current_app"
-            /usr/bin/open "$current_app" >/dev/null 2>&1 || true
-            exit 1
+            fail_update "新 App 未能在 20 秒内启动"
         fi
+        log "新 App 已启动，PID=$new_pid"
 
         (
             sleep 10
@@ -593,16 +705,20 @@ final class UpdateManager: ObservableObject {
             [.posixPermissions: NSNumber(value: 0o700)],
             ofItemAtPath: scriptURL.path
         )
+        try? fileManager.removeItem(at: pendingUpdateResultURL)
 
         let process = Process()
-        process.executableURL = URL(fileURLWithPath: "/bin/sh")
+        process.executableURL = URL(fileURLWithPath: "/usr/bin/nohup")
         process.arguments = [
+            "/bin/sh",
             scriptURL.path,
             currentApp.path,
             updatedApp.path,
             String(oldProcessID),
-            updateRoot.path
+            updateRoot.path,
+            pendingUpdateResultURL.path
         ]
+        process.standardInput = FileHandle.nullDevice
         process.standardOutput = FileHandle.nullDevice
         process.standardError = FileHandle.nullDevice
         try process.run()

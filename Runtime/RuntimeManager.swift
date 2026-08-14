@@ -39,6 +39,7 @@ final class RuntimeManager: ObservableObject {
     @Published private(set) var installStep = ""
     @Published private(set) var installProgressLabel = ""
     @Published private(set) var installLogs: [String] = []
+    @Published private(set) var isInstallProgressDismissed = false
 
     var needsInstallation: Bool {
         dshExecutableURL == nil
@@ -49,9 +50,14 @@ final class RuntimeManager: ObservableObject {
     }
 
     var showsInstallProgress: Bool {
+        guard !isInstallProgressDismissed else { return false }
         if isInstalling { return true }
         if case .failed = installState { return true }
         return false
+    }
+
+    func dismissInstallProgress() {
+        isInstallProgressDismissed = true
     }
 
     private let fileManager = FileManager.default
@@ -182,7 +188,7 @@ final class RuntimeManager: ObservableObject {
 
         do {
             var request = URLRequest(url: Self.npmMetadataURL)
-            request.setValue("DeepSeek Harness Desk/\(Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "0.2.15")", forHTTPHeaderField: "User-Agent")
+            request.setValue("DeepSeek Harness Desk/\(Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "0.2.16")", forHTTPHeaderField: "User-Agent")
             let (data, response) = try await URLSession.shared.data(for: request)
             if let httpResponse = response as? HTTPURLResponse,
                !(200..<300).contains(httpResponse.statusCode) {
@@ -483,6 +489,7 @@ final class RuntimeManager: ObservableObject {
     }
 
     private func beginInstallation(title: String) {
+        isInstallProgressDismissed = false
         installProgress = nil
         installStep = ""
         installProgressLabel = ""

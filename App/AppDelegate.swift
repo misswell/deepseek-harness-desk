@@ -117,6 +117,73 @@ final class WindowChromeView: NSView {
 }
 
 @MainActor
+final class ApplicationTerminationCoordinator {
+    typealias AsyncAction = @MainActor () async -> Void
+    typealias SyncAction = @MainActor () -> Void
+
+    private let gracefulTimeoutNanoseconds: UInt64
+    private var terminationInProgress = false
+    private var replyIssued = false
+    private var gracefulStopTask: Task<Void, Never>?
+    private var timeoutTask: Task<Void, Never>?
+
+    init(gracefulTimeout: TimeInterval = 8) {
+        gracefulTimeoutNanoseconds = UInt64(
+            max(0, gracefulTimeout) * 1_000_000_000
+        )
+    }
+
+    func requestTermination(
+        hasRunningProcess: Bool,
+        stop: @escaping AsyncAction,
+        forceStop: @escaping SyncAction,
+        reply: @escaping SyncAction
+    ) -> NSApplication.TerminateReply {
+        guard !replyIssued else {
+            return .terminateLater
+        }
+        guard hasRunningProcess else {
+            return .terminateNow
+        }
+        guard !terminationInProgress else {
+            return .terminateLater
+        }
+
+        terminationInProgress = true
+        gracefulStopTask = Task { @MainActor [weak self] in
+            await stop()
+            guard let self, self.terminationInProgress else { return }
+            self.finish(reply: reply)
+        }
+        timeoutTask = Task { @MainActor [weak self, forceStop, reply] in
+            do {
+                try await Task.sleep(nanoseconds: self?.gracefulTimeoutNanoseconds ?? 0)
+            } catch {
+                return
+            }
+            guard !Task.isCancelled, let self else { return }
+            guard self.terminationInProgress else { return }
+
+            self.gracefulStopTask?.cancel()
+            self.gracefulStopTask = nil
+            forceStop()
+            self.finish(reply: reply)
+        }
+        return .terminateLater
+    }
+
+    private func finish(reply: @escaping SyncAction) {
+        guard terminationInProgress else { return }
+        terminationInProgress = false
+        replyIssued = true
+        timeoutTask?.cancel()
+        timeoutTask = nil
+        gracefulStopTask = nil
+        reply()
+    }
+}
+
+@MainActor
 final class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject {
     static let dockIconPreferenceKey = "showDockIcon"
 
@@ -128,6 +195,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject {
     private weak var dockIconMenuItem: NSMenuItem?
     private var pendingWindowOpen = false
     private var windowDragEventMonitor: Any?
+    private let terminationCoordinator = ApplicationTerminationCoordinator()
 
     @Published private(set) var showsDockIcon: Bool
 
@@ -236,15 +304,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject {
     }
 
     func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
-        guard let harnessManager, harnessManager.hasRunningProcess else {
-            return .terminateNow
-        }
-
-        Task { @MainActor [weak self] in
-            await self?.harnessManager?.stop()
-            NSApp.reply(toApplicationShouldTerminate: true)
-        }
-        return .terminateLater
+        terminationCoordinator.requestTermination(
+            hasRunningProcess: harnessManager?.hasRunningProcess == true,
+            stop: { @MainActor [weak self] in
+                await self?.harnessManager?.stop()
+            },
+            forceStop: { [weak self] in
+                self?.harnessManager?.forceStopImmediately()
+            },
+            reply: {
+                NSApp.reply(toApplicationShouldTerminate: true)
+            }
+        )
     }
 
     private func configureStatusItem() {

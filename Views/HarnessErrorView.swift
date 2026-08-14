@@ -36,7 +36,8 @@ struct HarnessErrorView: View {
                             hasError: {
                                 if case .failed = runtimeManager.installState { return true }
                                 return false
-                            }()
+                            }(),
+                            onClose: { runtimeManager.dismissInstallProgress() }
                         )
                         .frame(maxWidth: 520)
                     }

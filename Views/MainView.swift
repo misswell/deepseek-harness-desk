@@ -53,14 +53,6 @@ struct MainView: View {
                 }
             }
 
-            if let release = updateManager.availableRelease, updateManager.hasAvailableUpdate {
-                UpdateAvailableBanner(version: release.version)
-                    .environmentObject(updateManager)
-                    .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topTrailing)
-                    .padding(.top, 52)
-                    .padding(.trailing, 18)
-            }
-
             VStack(alignment: .trailing, spacing: 12) {
                 if updateManager.showsInstallProgress {
                     InstallationProgressCard(
@@ -70,7 +62,8 @@ struct MainView: View {
                         progressLabel: updateManager.installProgressLabel,
                         logs: updateManager.installLogs,
                         isActive: updateManager.isInstalling,
-                        hasError: updateManager.status.contains("失败")
+                        hasError: updateManager.status.contains("失败"),
+                        onClose: { updateManager.dismissInstallProgress() }
                     )
                 }
 
@@ -85,13 +78,21 @@ struct MainView: View {
                         hasError: {
                             if case .failed = runtimeManager.installState { return true }
                             return false
-                        }()
+                        }(),
+                        onClose: { runtimeManager.dismissInstallProgress() }
                     )
                 }
             }
-            .frame(minWidth: 430, maxWidth: 430, maxHeight: .infinity, alignment: .bottomTrailing)
+            .frame(width: 360, alignment: .trailing)
             .padding(18)
-            .allowsHitTesting(false)
+        }
+        .overlay(alignment: .topTrailing) {
+            if let release = updateManager.availableRelease, updateManager.hasAvailableUpdate {
+                UpdateAvailableBanner(version: release.version)
+                    .environmentObject(updateManager)
+                    .padding(.top, 52)
+                    .padding(.trailing, 18)
+            }
         }
         .frame(minWidth: 900, minHeight: 600)
         .ignoresSafeArea(.container, edges: .top)
@@ -162,6 +163,28 @@ struct UpdateAvailableBanner: View {
             }
             .buttonStyle(.plain)
             .help("下载并安装更新")
+
+            Button {
+                updateManager.ignoreAvailableUpdate()
+            } label: {
+                Image(systemName: "bell.slash")
+                    .font(.system(size: 12, weight: .semibold))
+                    .foregroundStyle(.secondary)
+                    .frame(width: 24, height: 24)
+            }
+            .buttonStyle(.plain)
+            .help("忽略此版本")
+
+            Button {
+                updateManager.dismissAvailableUpdate()
+            } label: {
+                Image(systemName: "xmark")
+                    .font(.system(size: 11, weight: .semibold))
+                    .foregroundStyle(.secondary)
+                    .frame(width: 24, height: 24)
+            }
+            .buttonStyle(.plain)
+            .help("关闭更新提醒")
         }
         .padding(.horizontal, 12)
         .padding(.vertical, 9)
@@ -175,6 +198,8 @@ struct UpdateAvailableBanner: View {
 }
 
 struct InstallationProgressCard: View {
+    @State private var isCollapsed = false
+
     let title: String
     let step: String
     let progress: Double?
@@ -182,6 +207,27 @@ struct InstallationProgressCard: View {
     let logs: [String]
     let isActive: Bool
     let hasError: Bool
+    let onClose: (() -> Void)?
+
+    init(
+        title: String,
+        step: String,
+        progress: Double?,
+        progressLabel: String,
+        logs: [String],
+        isActive: Bool,
+        hasError: Bool,
+        onClose: (() -> Void)? = nil
+    ) {
+        self.title = title
+        self.step = step
+        self.progress = progress
+        self.progressLabel = progressLabel
+        self.logs = logs
+        self.isActive = isActive
+        self.hasError = hasError
+        self.onClose = onClose
+    }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
@@ -202,78 +248,105 @@ struct InstallationProgressCard: View {
 
                 Spacer(minLength: 8)
 
+                Button {
+                    withAnimation(.easeOut(duration: 0.16)) {
+                        isCollapsed.toggle()
+                    }
+                } label: {
+                    Image(systemName: isCollapsed ? "chevron.up" : "chevron.down")
+                        .font(.caption.weight(.semibold))
+                        .foregroundStyle(.secondary)
+                        .frame(width: 22, height: 22)
+                }
+                .buttonStyle(.plain)
+                .help(isCollapsed ? "展开进度" : "折叠进度")
+
+                if let onClose {
+                    Button(action: onClose) {
+                        Image(systemName: "xmark")
+                            .font(.caption.weight(.semibold))
+                            .foregroundStyle(.secondary)
+                            .frame(width: 22, height: 22)
+                    }
+                    .buttonStyle(.plain)
+                    .help("关闭进度窗口")
+                }
+
                 if isActive {
                     ProgressView()
                         .controlSize(.small)
                 }
             }
 
-            if let progress {
-                ProgressView(value: progress)
-                    .tint(.accentColor)
-            } else {
-                ProgressView()
-                    .tint(.accentColor)
-            }
-
-            HStack {
-                Text(progressLabel.isEmpty ? (isActive ? "处理中…" : "已停止") : progressLabel)
-                    .font(.caption.monospacedDigit())
-                    .foregroundStyle(.secondary)
-                Spacer()
+            if !isCollapsed {
                 if let progress {
-                    Text("\(Int(progress * 100))%")
+                    ProgressView(value: progress)
+                        .tint(.accentColor)
+                } else {
+                    ProgressView()
+                        .tint(.accentColor)
+                }
+
+                HStack {
+                    Text(progressLabel.isEmpty ? (isActive ? "处理中…" : "已停止") : progressLabel)
                         .font(.caption.monospacedDigit())
                         .foregroundStyle(.secondary)
+                    Spacer()
+                    if let progress {
+                        Text("\(Int(progress * 100))%")
+                            .font(.caption.monospacedDigit())
+                            .foregroundStyle(.secondary)
+                    }
                 }
-            }
 
-            Divider()
+                Divider()
 
-            HStack {
-                Text("实时日志")
-                    .font(.caption.weight(.semibold))
-                    .foregroundStyle(.secondary)
-                Spacer()
-                Text("\(logs.count) 条")
-                    .font(.caption2.monospacedDigit())
-                    .foregroundStyle(.tertiary)
-            }
+                HStack {
+                    Text("实时日志")
+                        .font(.caption.weight(.semibold))
+                        .foregroundStyle(.secondary)
+                    Spacer()
+                    Text("\(logs.count) 条")
+                        .font(.caption2.monospacedDigit())
+                        .foregroundStyle(.tertiary)
+                }
 
-            ScrollViewReader { proxy in
-                ScrollView {
-                    LazyVStack(alignment: .leading, spacing: 4) {
-                        if logs.isEmpty {
-                            Text("等待安装日志…")
-                                .font(.caption.monospaced())
-                                .foregroundStyle(.tertiary)
-                        } else {
-                            ForEach(logs.indices, id: \.self) { index in
-                                Text(logs[index])
-                                    .font(.caption2.monospaced())
-                                    .foregroundStyle(.secondary)
-                                    .textSelection(.enabled)
-                                    .id(index)
+                ScrollViewReader { proxy in
+                    ScrollView {
+                        LazyVStack(alignment: .leading, spacing: 4) {
+                            if logs.isEmpty {
+                                Text("等待安装日志…")
+                                    .font(.caption.monospaced())
+                                    .foregroundStyle(.tertiary)
+                            } else {
+                                ForEach(logs.indices, id: \.self) { index in
+                                    Text(logs[index])
+                                        .font(.caption2.monospaced())
+                                        .foregroundStyle(.secondary)
+                                        .textSelection(.enabled)
+                                        .id(index)
+                                }
                             }
                         }
+                        .frame(maxWidth: .infinity, alignment: .leading)
                     }
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                }
-                .frame(height: 132)
-                .onChange(of: logs.count) { _, _ in
-                    guard let lastIndex = logs.indices.last else { return }
-                    withAnimation(.easeOut(duration: 0.16)) {
-                        proxy.scrollTo(lastIndex, anchor: .bottom)
+                    .frame(height: 96)
+                    .onChange(of: logs.count) { _, _ in
+                        guard let lastIndex = logs.indices.last else { return }
+                        withAnimation(.easeOut(duration: 0.16)) {
+                            proxy.scrollTo(lastIndex, anchor: .bottom)
+                        }
                     }
-                }
-                .onAppear {
-                    if let lastIndex = logs.indices.last {
-                        proxy.scrollTo(lastIndex, anchor: .bottom)
+                    .onAppear {
+                        if let lastIndex = logs.indices.last {
+                            proxy.scrollTo(lastIndex, anchor: .bottom)
+                        }
                     }
                 }
             }
         }
         .padding(16)
+        .frame(width: 360)
         .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 16, style: .continuous))
         .overlay {
             RoundedRectangle(cornerRadius: 16, style: .continuous)

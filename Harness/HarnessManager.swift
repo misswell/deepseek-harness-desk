@@ -277,6 +277,34 @@ final class HarnessManager: ObservableObject {
         intentionalStop = false
     }
 
+    /// Sends the final kill signal without waiting for process confirmation.
+    /// App termination must not depend on a child process cooperating with its
+    /// graceful shutdown or on a potentially stuck wait operation.
+    func forceStopImmediately() {
+        recoveryTask?.cancel()
+        recoveryTask = nil
+
+        guard let currentProcess = process else {
+            state = .stopped
+            clearRuntimeMetadata()
+            return
+        }
+
+        intentionalStop = true
+        state = .stopping
+        logger.append(
+            "Force-stopping Harness immediately for App termination pid=\(currentProcess.processIdentifier)",
+            to: .desk
+        )
+        ProcessUtils.terminateProcessTree(
+            rootPID: currentProcess.processIdentifier,
+            force: true
+        )
+        cleanupProcessReferences()
+        state = .stopped
+        intentionalStop = false
+    }
+
     private func handleTermination(
         of terminatedProcess: Process,
         exitCode: Int32,

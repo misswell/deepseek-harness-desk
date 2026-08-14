@@ -108,6 +108,49 @@ final class DeepSeekHarnessDeskTests: XCTestCase {
     }
 
     @MainActor
+    func testTerminationCoordinatorRepliesWhenGracefulStopHangs() async {
+        let coordinator = ApplicationTerminationCoordinator(gracefulTimeout: 0.05)
+        let replyExpectation = expectation(description: "termination reply")
+        var forceStopCount = 0
+        var replyCount = 0
+
+        let decision = coordinator.requestTermination(
+            hasRunningProcess: true,
+            stop: {
+                try? await Task.sleep(nanoseconds: 500_000_000)
+            },
+            forceStop: {
+                forceStopCount += 1
+            },
+            reply: {
+                replyCount += 1
+                replyExpectation.fulfill()
+            }
+        )
+
+        XCTAssertEqual(decision, .terminateLater)
+        await fulfillment(of: [replyExpectation], timeout: 0.25)
+        XCTAssertEqual(forceStopCount, 1)
+        XCTAssertEqual(replyCount, 1)
+
+        let duplicateDecision = coordinator.requestTermination(
+            hasRunningProcess: true,
+            stop: {},
+            forceStop: {
+                forceStopCount += 1
+            },
+            reply: {
+                replyCount += 1
+            }
+        )
+
+        XCTAssertEqual(duplicateDecision, .terminateLater)
+        try? await Task.sleep(nanoseconds: 50_000_000)
+        XCTAssertEqual(forceStopCount, 1)
+        XCTAssertEqual(replyCount, 1)
+    }
+
+    @MainActor
     func testDockReopenHandlesReopenWhenOnlySettingsWindowIsVisible() {
         let delegate = AppDelegate()
         let mainWindow = NSWindow(

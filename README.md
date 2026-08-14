@@ -2,7 +2,7 @@
 
 原生 SwiftUI macOS 桌面客户端，用于启动并承载官方 DeepSeek Harness Web UI。
 
-当前版本：0.2.15
+当前版本：0.2.16
 
 - 无需预装 Node.js 或 `dsh`：首次启动时可一键下载并安装受校验的 Managed Node.js 与 DeepSeek Harness Runtime
 - 自动选择 `3080–3099` 的本地端口
