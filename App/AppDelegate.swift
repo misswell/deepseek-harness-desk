@@ -3,9 +3,8 @@ import SwiftUI
 
 fileprivate enum WindowChromeMetrics {
     static let titlebarHeight: CGFloat = 44
-    static let trafficLightHitSlop: CGFloat = 6
-    // Fallback monitor starts after the traffic lights. The native overlay
-    // handles the remaining title-bar area while protecting each button.
+    // Leave enough room for the three AppKit traffic-light buttons. The
+    // event monitor and the view overlay use the same boundary.
     static let trafficLightReservedWidth: CGFloat = 92
 }
 
@@ -29,8 +28,6 @@ struct WindowChromeConfigurator: NSViewRepresentable {
 /// outside SwiftUI/WKWebView is important: WebKit otherwise consumes the
 /// mouse-down before AppKit can start a window drag.
 final class WindowDragOverlayView: NSView {
-    weak var protectedWindow: NSWindow?
-
     override var mouseDownCanMoveWindow: Bool {
         true
     }
@@ -40,23 +37,7 @@ final class WindowDragOverlayView: NSView {
     }
 
     override func hitTest(_ point: NSPoint) -> NSView? {
-        guard bounds.contains(point) else { return nil }
-
-        if let protectedWindow {
-            for buttonType: NSWindow.ButtonType in [.closeButton, .miniaturizeButton, .zoomButton] {
-                guard let button = protectedWindow.standardWindowButton(buttonType),
-                      !button.isHidden else { continue }
-                let buttonFrame = button.convert(button.bounds, to: self)
-                if buttonFrame.insetBy(
-                    dx: -WindowChromeMetrics.trafficLightHitSlop,
-                    dy: -WindowChromeMetrics.trafficLightHitSlop
-                ).contains(point) {
-                    return nil
-                }
-            }
-        }
-
-        return self
+        bounds.contains(point) ? self : nil
     }
 
     override func mouseDown(with event: NSEvent) {
@@ -89,7 +70,9 @@ final class WindowChromeView: NSView {
 
     override func layout() {
         super.layout()
-        updateWindowDragOverlayFrame()
+        if let window {
+            installWindowDragOverlay(in: window)
+        }
     }
 
     func configureWindow() {
@@ -143,11 +126,10 @@ final class WindowChromeView: NSView {
 
         let overlay = windowDragOverlay ?? WindowDragOverlayView()
         windowDragOverlay = overlay
-        overlay.protectedWindow = window
         if overlay.superview !== contentView {
             overlay.removeFromSuperview()
             contentView.addSubview(overlay, positioned: .above, relativeTo: nil)
-        } else {
+        } else if contentView.subviews.last !== overlay {
             // SwiftUI/WKWebView can insert views after the representable has
             // been attached. Re-adding keeps the drag strip above the web view.
             contentView.addSubview(overlay, positioned: .above, relativeTo: nil)
@@ -164,11 +146,23 @@ final class WindowChromeView: NSView {
         // to the top edge while allowing it to follow window resizing.
         overlay.autoresizingMask = [.width, .minYMargin]
         overlay.frame = NSRect(
-            x: 0,
+            x: WindowChromeMetrics.trafficLightReservedWidth,
             y: max(0, contentView.bounds.height - WindowChromeMetrics.titlebarHeight),
-            width: max(0, contentView.bounds.width),
+            width: max(0, contentView.bounds.width - WindowChromeMetrics.trafficLightReservedWidth),
             height: min(WindowChromeMetrics.titlebarHeight, contentView.bounds.height)
         )
+    }
+}
+
+private final class WindowDragSession {
+    weak var window: NSWindow?
+    let initialMouseLocation: NSPoint
+    let initialFrame: NSRect
+
+    init(window: NSWindow, initialMouseLocation: NSPoint, initialFrame: NSRect) {
+        self.window = window
+        self.initialMouseLocation = initialMouseLocation
+        self.initialFrame = initialFrame
     }
 }
 
@@ -251,6 +245,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, Obse
     private var statusMenu: NSMenu?
     private weak var dockIconMenuItem: NSMenuItem?
     private var windowDragEventMonitor: Any?
+    private var windowDragSession: WindowDragSession?
     private let terminationCoordinator = ApplicationTerminationCoordinator()
     private static var terminatingForUpdate = false
 
@@ -326,28 +321,70 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, Obse
         guard windowDragEventMonitor == nil else { return }
 
         windowDragEventMonitor = NSEvent.addLocalMonitorForEvents(
-            matching: [.leftMouseDown]
+            matching: [.leftMouseDown, .leftMouseDragged, .leftMouseUp]
         ) { [weak self] event in
-            guard let self,
-                  let window = event.window,
-                  window === self.mainWindow,
-                  window.styleMask.contains(.titled),
-                  window.isMovable else {
+            guard let self else { return event }
+
+            switch event.type {
+            case .leftMouseDown:
+                self.windowDragSession = nil
+                guard let window = event.window,
+                      self.isWindowDragStart(event, in: window) else {
+                    return event
+                }
+
+                if event.clickCount == 2 {
+                    window.zoom(nil)
+                    return nil
+                }
+
+                self.windowDragSession = WindowDragSession(
+                    window: window,
+                    initialMouseLocation: NSEvent.mouseLocation,
+                    initialFrame: window.frame
+                )
+                return nil
+
+            case .leftMouseDragged:
+                guard let session = self.windowDragSession,
+                      let window = session.window else {
+                    self.windowDragSession = nil
+                    return event
+                }
+
+                let currentLocation = NSEvent.mouseLocation
+                let delta = NSPoint(
+                    x: currentLocation.x - session.initialMouseLocation.x,
+                    y: currentLocation.y - session.initialMouseLocation.y
+                )
+                window.setFrameOrigin(NSPoint(
+                    x: session.initialFrame.origin.x + delta.x,
+                    y: session.initialFrame.origin.y + delta.y
+                ))
+                return nil
+
+            case .leftMouseUp:
+                guard self.windowDragSession != nil else { return event }
+                self.windowDragSession = nil
+                return nil
+
+            default:
                 return event
             }
-
-            guard let contentView = window.contentView else { return event }
-            let point = contentView.convert(event.locationInWindow, from: nil)
-            let distanceFromTop = contentView.bounds.maxY - point.y
-            guard distanceFromTop >= 0,
-                  distanceFromTop <= WindowChromeMetrics.titlebarHeight,
-                  point.x >= WindowChromeMetrics.trafficLightReservedWidth else {
-                return event
-            }
-
-            window.performDrag(with: event)
-            return nil
         }
+    }
+
+    private func isWindowDragStart(_ event: NSEvent, in window: NSWindow) -> Bool {
+        guard window.isMovable,
+              let contentView = window.contentView else {
+            return false
+        }
+
+        let point = contentView.convert(event.locationInWindow, from: nil)
+        let distanceFromTop = contentView.bounds.maxY - point.y
+        return distanceFromTop >= 0 &&
+            distanceFromTop <= WindowChromeMetrics.titlebarHeight &&
+            point.x >= WindowChromeMetrics.trafficLightReservedWidth
     }
 
     func setShowsDockIcon(_ visible: Bool) {

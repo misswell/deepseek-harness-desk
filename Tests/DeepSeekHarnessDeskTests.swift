@@ -233,12 +233,18 @@ final class DeepSeekHarnessDeskTests: XCTestCase {
         let overlays = contentView.subviews.compactMap { $0 as? WindowDragOverlayView }
         XCTAssertEqual(overlays.count, 1)
         XCTAssertTrue(overlays[0].mouseDownCanMoveWindow)
+        XCTAssertEqual(overlays[0].frame.minX, 92, accuracy: 1)
         XCTAssertEqual(overlays[0].frame.minY, contentView.bounds.maxY - 44, accuracy: 1)
         XCTAssertTrue(contentView.subviews.last === overlays[0])
         XCTAssertTrue(window.styleMask.contains(.fullSizeContentView))
         XCTAssertTrue(window.titlebarAppearsTransparent)
         XCTAssertFalse(window.isOpaque)
         XCTAssertEqual(window.backgroundColor, .clear)
+
+        let webView = NSView(frame: contentView.bounds)
+        contentView.addSubview(webView)
+        chrome.layout()
+        XCTAssertTrue(contentView.subviews.last === overlays[0])
     }
 
     @MainActor
