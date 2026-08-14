@@ -180,6 +180,19 @@ final class DeepSeekHarnessDeskTests: XCTestCase {
     }
 
     @MainActor
+    func testOpenMainWindowAsksSwiftUIToRecreateWindowWhenMainWindowIsMissing() {
+        let delegate = AppDelegate()
+        let notificationExpectation = expectation(
+            forNotification: AppDelegate.openMainWindowNotification,
+            object: nil
+        )
+
+        delegate.openMainWindow(forceReload: true)
+
+        wait(for: [notificationExpectation], timeout: 1)
+    }
+
+    @MainActor
     func testWebKitPolicyCancellationDoesNotShowLoadError() {
         let controller = WebViewController()
         let webView = WKWebView(frame: .zero)

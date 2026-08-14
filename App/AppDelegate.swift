@@ -186,6 +186,7 @@ final class ApplicationTerminationCoordinator {
 @MainActor
 final class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject {
     static let dockIconPreferenceKey = "showDockIcon"
+    static let openMainWindowNotification = Notification.Name("com.deepseek-harness-desk.open-main-window")
 
     private weak var harnessManager: HarnessManager?
     private weak var webViewController: WebViewController?
@@ -193,7 +194,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject {
     private var statusItem: NSStatusItem?
     private var statusMenu: NSMenu?
     private weak var dockIconMenuItem: NSMenuItem?
-    private var pendingWindowOpen = false
     private var windowDragEventMonitor: Any?
     private let terminationCoordinator = ApplicationTerminationCoordinator()
     private var terminatingForUpdate = false
@@ -284,13 +284,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject {
     }
 
     func openMainWindow(forceReload: Bool = true) {
-        guard let window = mainWindow else {
-            guard !pendingWindowOpen else { return }
-            pendingWindowOpen = true
-            DispatchQueue.main.async { [weak self] in
-                self?.pendingWindowOpen = false
-                self?.openMainWindow(forceReload: forceReload)
-            }
+        guard let window = mainWindow, NSApp.windows.contains(window) else {
+            // The SwiftUI main window is gone (usually closed). Ask SwiftUI to
+            // recreate it instead of retrying forever on a stale reference.
+            NotificationCenter.default.post(name: Self.openMainWindowNotification, object: nil)
             return
         }
 

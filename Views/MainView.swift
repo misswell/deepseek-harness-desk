@@ -5,6 +5,7 @@ struct MainView: View {
     @EnvironmentObject private var webViewController: WebViewController
     @EnvironmentObject private var updateManager: UpdateManager
     @EnvironmentObject private var runtimeManager: RuntimeManager
+    @Environment(\.openWindow) private var openWindow
 
     var body: some View {
         ZStack(alignment: .bottomTrailing) {
@@ -96,6 +97,11 @@ struct MainView: View {
         }
         .frame(minWidth: 900, minHeight: 600)
         .ignoresSafeArea(.container, edges: .top)
+        .onReceive(
+            NotificationCenter.default.publisher(for: AppDelegate.openMainWindowNotification)
+        ) { _ in
+            openWindow(id: "main")
+        }
     }
 }
 

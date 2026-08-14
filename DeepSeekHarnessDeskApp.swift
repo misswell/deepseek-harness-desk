@@ -7,7 +7,7 @@ struct DeepSeekHarnessDeskApp: App {
     @Environment(\.scenePhase) private var scenePhase
 
     var body: some Scene {
-        WindowGroup {
+        WindowGroup(id: "main") {
             MainView()
                 .environmentObject(appState)
                 .environmentObject(appDelegate)
