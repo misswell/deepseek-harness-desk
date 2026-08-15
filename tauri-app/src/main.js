@@ -181,7 +181,9 @@ function renderRuntime() {
 function renderSettingsTab() {
   const tab = state.settingsTab;
   for (const button of elements.settingsTabs) {
-    button.classList.toggle("active", button.dataset.settingsTab === tab);
+    const active = button.dataset.settingsTab === tab;
+    button.classList.toggle("active", active);
+    button.setAttribute("aria-selected", String(active));
   }
   for (const page of elements.settingsPages) {
     page.classList.toggle("hidden", page.dataset.settingsPage !== tab);
