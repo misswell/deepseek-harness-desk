@@ -1,8 +1,10 @@
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
+use std::cmp::Ordering as VersionOrdering;
 use std::collections::{HashSet, VecDeque};
 use std::env;
-use std::fs;
-use std::io::{BufRead, BufReader, Read};
+use std::fs::{self, OpenOptions};
+use std::io::{BufRead, BufReader, Read, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
 use std::sync::atomic::{AtomicBool, AtomicU16, Ordering};
@@ -16,9 +18,13 @@ use tauri::{AppHandle, Emitter, Manager, RunEvent, State, WebviewWindow, WindowE
 const PORT_START: u16 = 3080;
 const PORT_END: u16 = 3099;
 const MAX_LOG_LINES: usize = 500;
+const APP_VERSION: &str = env!("CARGO_PKG_VERSION");
 const NODE_VERSION: &str = "24.19.0";
 const DSH_VERSION: &str = "0.1.0-rc.6";
 const DSH_PACKAGE: &str = "@deepseek-ai/dsh";
+const RELEASES_URL: &str =
+    "https://api.github.com/repos/misswell/deepseek-harness-desk/releases/latest";
+const NPM_METADATA_URL: &str = "https://registry.npmjs.org/@deepseek-ai%2fdsh";
 
 #[derive(Clone)]
 struct HarnessState {
@@ -31,6 +37,7 @@ struct HarnessState {
     last_exit_code: Arc<Mutex<Option<i32>>>,
     runtime_installing: Arc<AtomicBool>,
     runtime_message: Arc<Mutex<String>>,
+    app_update_installing: Arc<AtomicBool>,
 }
 
 #[derive(Serialize, Clone, Debug)]
@@ -60,10 +67,70 @@ struct HarnessStatus {
 struct RuntimeStatus {
     available: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
+    version: Option<String>,
+    node_version: String,
+    runtime_root: String,
+    logs_directory: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
     path: Option<String>,
     installing: bool,
     #[serde(skip_serializing_if = "String::is_empty")]
     message: String,
+}
+
+#[derive(Serialize, Clone, Debug)]
+struct DshUpdateStatus {
+    managed: bool,
+    current_version: Option<String>,
+    latest_version: Option<String>,
+    available: bool,
+    status: String,
+}
+
+#[derive(Serialize, Clone, Debug)]
+struct AppUpdateStatus {
+    current_version: String,
+    latest_version: Option<String>,
+    available: bool,
+    status: String,
+    release_url: Option<String>,
+    download_url: Option<String>,
+    asset_name: Option<String>,
+    notes: Option<String>,
+}
+
+#[derive(Serialize, Clone, Debug)]
+struct UpdateProgress {
+    message: String,
+    fraction: Option<f64>,
+    done: bool,
+    error: Option<String>,
+}
+
+#[derive(Deserialize, Clone, Debug)]
+struct GithubRelease {
+    tag_name: String,
+    html_url: String,
+    body: Option<String>,
+    assets: Vec<GithubAsset>,
+}
+
+#[derive(Deserialize, Clone, Debug)]
+struct GithubAsset {
+    name: String,
+    browser_download_url: String,
+    digest: Option<String>,
+}
+
+#[derive(Deserialize, Debug)]
+struct NpmMetadata {
+    #[serde(rename = "dist-tags")]
+    dist_tags: NpmDistTags,
+}
+
+#[derive(Deserialize, Debug)]
+struct NpmDistTags {
+    latest: Option<String>,
 }
 
 #[derive(Serialize, Clone, Debug)]
@@ -87,6 +154,81 @@ fn is_port_available(port: u16) -> bool {
 
 fn first_available_port(start: u16, end: u16) -> Option<u16> {
     (start..=end).find(|port| is_port_available(*port))
+}
+
+fn version_parts(value: &str) -> (Vec<u64>, Vec<String>) {
+    let normalized = value.trim().trim_start_matches(['v', 'V']);
+    let mut parts = normalized.splitn(2, '-');
+    let core = parts
+        .next()
+        .unwrap_or_default()
+        .split('.')
+        .map(|part| part.parse::<u64>().unwrap_or(0))
+        .collect::<Vec<_>>();
+    let prerelease = parts
+        .next()
+        .unwrap_or_default()
+        .split('.')
+        .filter(|part| !part.is_empty())
+        .map(str::to_string)
+        .collect::<Vec<_>>();
+    (core, prerelease)
+}
+
+fn compare_versions(candidate: &str, current: &str) -> VersionOrdering {
+    let (candidate_core, candidate_pre) = version_parts(candidate);
+    let (current_core, current_pre) = version_parts(current);
+    let core_len = candidate_core.len().max(current_core.len());
+    for index in 0..core_len {
+        let candidate_value = candidate_core.get(index).copied().unwrap_or(0);
+        let current_value = current_core.get(index).copied().unwrap_or(0);
+        match candidate_value.cmp(&current_value) {
+            VersionOrdering::Equal => {}
+            ordering => return ordering,
+        }
+    }
+
+    match (candidate_pre.is_empty(), current_pre.is_empty()) {
+        (true, false) => return VersionOrdering::Greater,
+        (false, true) => return VersionOrdering::Less,
+        _ => {}
+    }
+    for index in 0..candidate_pre.len().max(current_pre.len()) {
+        let Some(candidate_value) = candidate_pre.get(index) else {
+            return VersionOrdering::Less;
+        };
+        let Some(current_value) = current_pre.get(index) else {
+            return VersionOrdering::Greater;
+        };
+        match (candidate_value.parse::<u64>(), current_value.parse::<u64>()) {
+            (Ok(candidate_number), Ok(current_number)) => {
+                match candidate_number.cmp(&current_number) {
+                    VersionOrdering::Equal => {}
+                    ordering => return ordering,
+                }
+            }
+            (Ok(_), Err(_)) => return VersionOrdering::Less,
+            (Err(_), Ok(_)) => return VersionOrdering::Greater,
+            (Err(_), Err(_)) => match candidate_value.cmp(current_value) {
+                VersionOrdering::Equal => {}
+                ordering => return ordering,
+            },
+        }
+    }
+    VersionOrdering::Equal
+}
+
+fn is_newer_version(candidate: &str, current: &str) -> bool {
+    compare_versions(candidate, current) == VersionOrdering::Greater
+}
+
+fn is_safe_package_version(version: &str) -> bool {
+    !version.is_empty()
+        && version.len() < 128
+        && !version.contains('/')
+        && !version.contains('\\')
+        && !version.contains("..")
+        && !version.chars().any(char::is_whitespace)
 }
 
 fn home_directory() -> Option<PathBuf> {
@@ -131,6 +273,62 @@ fn push_unique(paths: &mut Vec<PathBuf>, path: PathBuf) {
     if !paths.iter().any(|existing| existing == &path) {
         paths.push(path);
     }
+}
+
+fn managed_dsh_version_paths(app: Option<&AppHandle>) -> Vec<(String, PathBuf)> {
+    let mut versions = Vec::new();
+    for runtime_root in runtime_roots(app) {
+        let runtime_dsh = runtime_root.join("dsh");
+        let Ok(entries) = fs::read_dir(runtime_dsh) else {
+            continue;
+        };
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if !path.is_dir() {
+                continue;
+            }
+            if let Some(version) = entry.file_name().to_str() {
+                versions.push((version.to_string(), path));
+            }
+        }
+    }
+    versions.sort_by(|(left_version, _), (right_version, _)| {
+        compare_versions(right_version, left_version)
+    });
+    versions
+}
+
+fn managed_dsh_version(app: Option<&AppHandle>) -> Option<String> {
+    let executable = dsh_executable;
+    managed_dsh_version_paths(app)
+        .into_iter()
+        .find(|(_, path)| is_executable(&executable(path)))
+        .map(|(version, _)| version)
+}
+
+fn managed_node_root(app: Option<&AppHandle>) -> Option<PathBuf> {
+    let mut versions = Vec::new();
+    for runtime_root in runtime_roots(app) {
+        let runtime_node = runtime_root.join("node");
+        let Ok(entries) = fs::read_dir(runtime_node) else {
+            continue;
+        };
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if path.is_dir() {
+                if let Some(version) = entry.file_name().to_str() {
+                    versions.push((version.to_string(), path));
+                }
+            }
+        }
+    }
+    versions.sort_by(|(left_version, _), (right_version, _)| {
+        compare_versions(right_version, left_version)
+    });
+    versions
+        .into_iter()
+        .find(|(_, path)| is_executable(&node_executable(path)))
+        .map(|(_, path)| path)
 }
 
 fn legacy_runtime_root() -> Option<PathBuf> {
@@ -202,27 +400,14 @@ fn dsh_candidates(app: Option<&AppHandle>) -> Vec<PathBuf> {
     let names = vec!["dsh".to_string()];
 
     // Reuse both the runtime created by the old Swift client and the Tauri
-    // app-data runtime created by the first-run installer. These must be
-    // checked before PATH so an old system dsh cannot run with an old Node.
-    for runtime_root in runtime_roots(app) {
-        let runtime_dsh = runtime_root.join("dsh");
+    // app-data runtime created by the first-run installer. Always prefer the
+    // newest managed package so an installed dsh update becomes active.
+    for (_, version_dir) in managed_dsh_version_paths(app) {
         for name in &names {
-            push_unique(&mut candidates, runtime_dsh.join(name));
-        }
-
-        if let Ok(versions) = std::fs::read_dir(&runtime_dsh) {
-            for version in versions.flatten() {
-                let version_dir = version.path();
-                if !version_dir.is_dir() {
-                    continue;
-                }
-                for name in &names {
-                    push_unique(
-                        &mut candidates,
-                        version_dir.join("node_modules/.bin").join(name),
-                    );
-                }
-            }
+            push_unique(
+                &mut candidates,
+                version_dir.join("node_modules/.bin").join(name),
+            );
         }
     }
 
@@ -361,9 +546,14 @@ fn spawn_dsh(command: &DshCommand, port: u16, app: &AppHandle) -> std::io::Resul
 }
 
 fn runtime_status_snapshot(app: &AppHandle, state: &HarnessState) -> RuntimeStatus {
+    let command = dsh_command(app);
     RuntimeStatus {
-        available: dsh_command(app).is_some(),
-        path: dsh_command(app).map(|command| command.program.to_string_lossy().into_owned()),
+        available: command.is_some(),
+        version: managed_dsh_version(Some(app)),
+        node_version: NODE_VERSION.to_string(),
+        runtime_root: preferred_runtime_root(app).to_string_lossy().into_owned(),
+        logs_directory: logs_directory(app).to_string_lossy().into_owned(),
+        path: command.map(|command| command.program.to_string_lossy().into_owned()),
         installing: state.runtime_installing.load(Ordering::Acquire),
         message: state
             .runtime_message
@@ -551,6 +741,7 @@ fn install_dsh_package(
     state: &HarnessState,
     node_root: &Path,
     dsh_staging: &Path,
+    version: &str,
 ) -> Result<(), String> {
     let npm = if cfg!(target_os = "windows") {
         node_root.join("npm.cmd")
@@ -569,7 +760,7 @@ fn install_dsh_package(
         "--no-fund".to_string(),
         "--no-update-notifier".to_string(),
         "--no-package-lock".to_string(),
-        format!("{DSH_PACKAGE}@{DSH_VERSION}"),
+        format!("{DSH_PACKAGE}@{version}"),
     ];
     let mut command = if cfg!(target_os = "windows") {
         let mut command = Command::new("cmd.exe");
@@ -594,12 +785,11 @@ fn install_dsh_package(
             }
         }
         if !bytes.is_empty() {
-            let _ = app.emit(
-                "harness-output",
-                HarnessLog {
-                    stream: format!("runtime-{stream}"),
-                    message: String::from_utf8_lossy(bytes).trim().to_string(),
-                },
+            emit_log(
+                app,
+                &state.logs,
+                &format!("runtime-{stream}"),
+                String::from_utf8_lossy(bytes).trim().to_string(),
             );
         }
     }
@@ -706,7 +896,7 @@ async fn install_runtime_inner(app: &AppHandle, state: &HarnessState) -> Result<
                 false,
                 None,
             );
-            install_dsh_package(app, state, &node_root, &dsh_staging)?;
+            install_dsh_package(app, state, &node_root, &dsh_staging, DSH_VERSION)?;
             if !is_executable(&dsh_executable(&dsh_staging)) {
                 return Err("npm 安装完成，但没有生成 dsh 命令。".to_string());
             }
@@ -746,6 +936,508 @@ async fn install_runtime_inner(app: &AppHandle, state: &HarnessState) -> Result<
     }
 }
 
+fn emit_update_progress(
+    app: &AppHandle,
+    message: impl Into<String>,
+    fraction: Option<f64>,
+    done: bool,
+    error: Option<String>,
+) {
+    let _ = app.emit(
+        "update-progress",
+        UpdateProgress {
+            message: message.into(),
+            fraction,
+            done,
+            error,
+        },
+    );
+}
+
+async fn fetch_latest_release() -> Result<GithubRelease, String> {
+    let client = reqwest::Client::builder()
+        .timeout(Duration::from_secs(20))
+        .user_agent(format!("DeepSeek Harness Desk/{APP_VERSION}"))
+        .build()
+        .map_err(|error| format!("创建更新检查客户端失败：{error}"))?;
+    let response = client
+        .get(RELEASES_URL)
+        .header("Accept", "application/vnd.github+json")
+        .send()
+        .await
+        .map_err(|error| format!("检查 App 更新失败：{error}"))?;
+    if !response.status().is_success() {
+        return Err(format!("GitHub 返回 HTTP {}", response.status()));
+    }
+    response
+        .json::<GithubRelease>()
+        .await
+        .map_err(|error| format!("解析 App 更新信息失败：{error}"))
+}
+
+fn release_version(release: &GithubRelease) -> String {
+    release.tag_name.trim_start_matches(['v', 'V']).to_string()
+}
+
+fn platform_app_asset<'a>(release: &'a GithubRelease) -> Option<&'a GithubAsset> {
+    let asset = |predicate: &dyn Fn(&str) -> bool| {
+        release
+            .assets
+            .iter()
+            .find(|asset| predicate(&asset.name.to_ascii_lowercase()))
+    };
+
+    #[cfg(target_os = "macos")]
+    {
+        asset(&|name| name.ends_with(".app.tar.gz"))
+            .or_else(|| asset(&|name| name.ends_with(".dmg")))
+    }
+    #[cfg(target_os = "windows")]
+    {
+        asset(&|name| name.ends_with(".exe") && name.contains("setup"))
+            .or_else(|| asset(&|name| name.ends_with(".msi")))
+    }
+    #[cfg(target_os = "linux")]
+    {
+        asset(&|name| name.ends_with(".appimage")).or_else(|| asset(&|name| name.ends_with(".deb")))
+    }
+    #[cfg(not(any(target_os = "macos", target_os = "windows", target_os = "linux")))]
+    {
+        let _ = asset;
+        None
+    }
+}
+
+fn app_update_status(release: &GithubRelease) -> AppUpdateStatus {
+    let latest_version = release_version(release);
+    let asset = platform_app_asset(release);
+    if !is_newer_version(&latest_version, APP_VERSION) {
+        return AppUpdateStatus {
+            current_version: APP_VERSION.to_string(),
+            latest_version: Some(latest_version),
+            available: false,
+            status: format!("已是最新版本 {APP_VERSION}"),
+            release_url: Some(release.html_url.clone()),
+            download_url: asset.map(|asset| asset.browser_download_url.clone()),
+            asset_name: asset.map(|asset| asset.name.clone()),
+            notes: release.body.clone(),
+        };
+    }
+
+    let (available, status) = if asset.is_some() {
+        (true, format!("发现新版本 {latest_version}"))
+    } else {
+        (
+            false,
+            format!("发现新版本 {latest_version}，但暂无当前系统安装包"),
+        )
+    };
+    AppUpdateStatus {
+        current_version: APP_VERSION.to_string(),
+        latest_version: Some(latest_version),
+        available,
+        status,
+        release_url: Some(release.html_url.clone()),
+        download_url: asset.map(|asset| asset.browser_download_url.clone()),
+        asset_name: asset.map(|asset| asset.name.clone()),
+        notes: release.body.clone(),
+    }
+}
+
+async fn download_update_asset(
+    app: &AppHandle,
+    asset: &GithubAsset,
+    destination: &Path,
+) -> Result<(), String> {
+    emit_update_progress(app, "正在下载 App 更新…", Some(0.05), false, None);
+    let client = reqwest::Client::builder()
+        .timeout(Duration::from_secs(300))
+        .user_agent(format!("DeepSeek Harness Desk/{APP_VERSION}"))
+        .build()
+        .map_err(|error| format!("创建 App 下载客户端失败：{error}"))?;
+    let response = client
+        .get(&asset.browser_download_url)
+        .header("Accept", "application/octet-stream")
+        .send()
+        .await
+        .map_err(|error| format!("下载 App 更新失败：{error}"))?;
+    if !response.status().is_success() {
+        return Err(format!("下载 App 更新失败（HTTP {}）", response.status()));
+    }
+    let bytes = response
+        .bytes()
+        .await
+        .map_err(|error| format!("读取 App 更新失败：{error}"))?;
+    fs::write(destination, &bytes).map_err(|error| format!("保存 App 更新失败：{error}"))?;
+    emit_update_progress(app, "正在校验 App 更新…", Some(0.8), false, None);
+    if let Some(expected) = asset.digest.as_deref() {
+        verify_sha256(destination, expected)?;
+    }
+    emit_update_progress(app, "App 更新包校验通过。", Some(0.9), false, None);
+    Ok(())
+}
+
+fn verify_sha256(path: &Path, expected: &str) -> Result<(), String> {
+    let bytes = fs::read(path).map_err(|error| format!("读取更新包失败：{error}"))?;
+    let digest = Sha256::digest(bytes);
+    let actual = digest
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect::<String>();
+    let expected = expected
+        .split_once(':')
+        .map(|(_, digest)| digest)
+        .unwrap_or(expected);
+    if actual.eq_ignore_ascii_case(expected) {
+        Ok(())
+    } else {
+        Err("更新包完整性校验失败，请重试。".to_string())
+    }
+}
+
+fn update_root() -> PathBuf {
+    env::temp_dir().join(format!(
+        "DeepSeekHarnessDesk-Update-{}-{}",
+        std::process::id(),
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map(|duration| duration.as_nanos())
+            .unwrap_or_default()
+    ))
+}
+
+fn safe_asset_filename(name: &str) -> String {
+    Path::new(name)
+        .file_name()
+        .and_then(|name| name.to_str())
+        .filter(|name| !name.is_empty())
+        .unwrap_or("DeepSeekHarnessDesk-update")
+        .to_string()
+}
+
+fn current_app_bundle() -> Option<PathBuf> {
+    let executable = env::current_exe().ok()?;
+    executable
+        .ancestors()
+        .find(|path| path.extension().is_some_and(|extension| extension == "app"))
+        .map(Path::to_path_buf)
+}
+
+fn find_app_bundle(root: &Path) -> Option<PathBuf> {
+    if root.extension().is_some_and(|extension| extension == "app") {
+        return Some(root.to_path_buf());
+    }
+    let entries = fs::read_dir(root).ok()?;
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if path.is_dir() {
+            if let Some(app) = find_app_bundle(&path) {
+                return Some(app);
+            }
+        }
+    }
+    None
+}
+
+fn shell_quote(value: &Path) -> String {
+    format!("'{}'", value.to_string_lossy().replace('\'', "'\\''"))
+}
+
+#[cfg(target_os = "macos")]
+fn macos_app_version(app: &Path) -> Option<String> {
+    let info = app.join("Contents/Info.plist");
+    let output = Command::new("/usr/bin/plutil")
+        .args(["-extract", "CFBundleShortVersionString", "raw", "-o", "-"])
+        .arg(info)
+        .output()
+        .ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    Some(String::from_utf8_lossy(&output.stdout).trim().to_string())
+}
+
+#[cfg(target_os = "macos")]
+fn launch_macos_replacement(
+    app: &AppHandle,
+    archive: &Path,
+    expected_version: &str,
+    update_root: &Path,
+) -> Result<(), String> {
+    let current_app = current_app_bundle().ok_or("当前 App 不是可自动替换的 macOS 应用包。")?;
+    let extraction = update_root.join("extracted");
+    fs::create_dir_all(&extraction).map_err(|error| format!("创建更新目录失败：{error}"))?;
+    let output = Command::new("/usr/bin/tar")
+        .args(["-xzf"])
+        .arg(archive)
+        .args(["-C"])
+        .arg(&extraction)
+        .output()
+        .map_err(|error| format!("解压 App 更新失败：{error}"))?;
+    if !output.status.success() {
+        return Err(format!(
+            "解压 App 更新失败：{}",
+            String::from_utf8_lossy(&output.stderr).trim()
+        ));
+    }
+    let updated_app = find_app_bundle(&extraction).ok_or("更新包中没有找到 macOS App。")?;
+    let updated_version = macos_app_version(&updated_app).ok_or("更新包中的 App 缺少版本信息。")?;
+    if updated_version != expected_version {
+        return Err("更新包版本与 Release 不一致。".to_string());
+    }
+    let signature = Command::new("/usr/bin/codesign")
+        .args(["--verify", "--deep", "--strict"])
+        .arg(&updated_app)
+        .output()
+        .map_err(|error| format!("校验 App 签名失败：{error}"))?;
+    if !signature.status.success() {
+        return Err(format!(
+            "更新包签名校验失败：{}",
+            String::from_utf8_lossy(&signature.stderr).trim()
+        ));
+    }
+    let script = update_root.join("replace-app.sh");
+    let current_pid = std::process::id();
+    let contents = format!(
+        "#!/bin/sh\nset -eu\nold_pid={current_pid}\nwhile kill -0 \"$old_pid\" 2>/dev/null; do sleep 0.25; done\nrm -rf {current}\nmv {updated} {current}\nopen -n {current}\nrm -f \"$0\"\n",
+        current = shell_quote(&current_app),
+        updated = shell_quote(&updated_app),
+    );
+    fs::write(&script, contents).map_err(|error| format!("准备 App 替换程序失败：{error}"))?;
+    let output = Command::new("/bin/sh")
+        .arg(&script)
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+        .map_err(|error| format!("启动 App 替换程序失败：{error}"))?;
+    let _ = output.id();
+    emit_update_progress(
+        app,
+        "更新完成，正在重启 DeepSeek Harness Desk…",
+        Some(1.0),
+        true,
+        None,
+    );
+    app.exit(0);
+    Ok(())
+}
+
+async fn install_app_update_inner(
+    app: &AppHandle,
+    state: &HarnessState,
+) -> Result<AppUpdateStatus, String> {
+    if state.app_update_installing.swap(true, Ordering::AcqRel) {
+        return Err("App 更新正在进行，请等待当前更新完成。".to_string());
+    }
+    let result: Result<AppUpdateStatus, String> = async {
+        let release = fetch_latest_release().await?;
+        let status = app_update_status(&release);
+        if !status.available {
+            return Ok(status);
+        }
+        let asset = platform_app_asset(&release).ok_or("最新 Release 没有当前系统的安装包。")?;
+        let root = update_root();
+        fs::create_dir_all(&root).map_err(|error| format!("创建更新目录失败：{error}"))?;
+        let archive = root.join(safe_asset_filename(&asset.name));
+        download_update_asset(app, asset, &archive).await?;
+        let version = release_version(&release);
+
+        #[cfg(target_os = "macos")]
+        {
+            if asset.name.to_ascii_lowercase().ends_with(".app.tar.gz") {
+                launch_macos_replacement(app, &archive, &version, &root)?;
+            } else {
+                open_external_url(&asset.browser_download_url)?;
+                emit_update_progress(app, "已打开 macOS 安装包下载。", Some(1.0), true, None);
+            }
+        }
+        #[cfg(target_os = "windows")]
+        {
+            if asset.name.to_ascii_lowercase().ends_with(".msi") {
+                Command::new("msiexec.exe")
+                    .args(["/i"])
+                    .arg(&archive)
+                    .spawn()
+                    .map_err(|error| format!("启动 Windows 安装程序失败：{error}"))?;
+            } else {
+                Command::new(&archive)
+                    .spawn()
+                    .map_err(|error| format!("启动 Windows 安装程序失败：{error}"))?;
+            }
+            emit_update_progress(
+                app,
+                "安装程序已启动，正在退出旧版本…",
+                Some(1.0),
+                true,
+                None,
+            );
+            app.exit(0);
+        }
+        #[cfg(target_os = "linux")]
+        {
+            if asset.name.to_ascii_lowercase().ends_with(".appimage") {
+                let mut permissions = fs::metadata(&archive)
+                    .map_err(|error| format!("读取 AppImage 权限失败：{error}"))?
+                    .permissions();
+                use std::os::unix::fs::PermissionsExt;
+                permissions.set_mode(permissions.mode() | 0o755);
+                fs::set_permissions(&archive, permissions)
+                    .map_err(|error| format!("设置 AppImage 权限失败：{error}"))?;
+                Command::new(&archive)
+                    .spawn()
+                    .map_err(|error| format!("启动 AppImage 失败：{error}"))?;
+                emit_update_progress(app, "新版本 AppImage 已启动。", Some(1.0), true, None);
+            } else {
+                open_external_url(&asset.browser_download_url)?;
+                emit_update_progress(app, "已打开 Linux 安装包下载。", Some(1.0), true, None);
+            }
+        }
+        Ok(status)
+    }
+    .await;
+    state.app_update_installing.store(false, Ordering::Release);
+    if let Err(error) = &result {
+        emit_update_progress(app, "App 更新失败。", None, true, Some(error.clone()));
+    }
+    result
+}
+
+async fn check_dsh_update_inner(app: &AppHandle) -> Result<DshUpdateStatus, String> {
+    let current_version = managed_dsh_version(Some(app));
+    if current_version.is_none() {
+        return Ok(DshUpdateStatus {
+            managed: false,
+            current_version: None,
+            latest_version: None,
+            available: false,
+            status: "尚未安装内置 dsh，完成一键安装后可检查更新。".to_string(),
+        });
+    }
+    let client = reqwest::Client::builder()
+        .timeout(Duration::from_secs(20))
+        .user_agent(format!("DeepSeek Harness Desk/{APP_VERSION}"))
+        .build()
+        .map_err(|error| format!("创建 dsh 更新检查客户端失败：{error}"))?;
+    let response = client
+        .get(NPM_METADATA_URL)
+        .send()
+        .await
+        .map_err(|error| format!("检查 dsh 更新失败：{error}"))?;
+    if !response.status().is_success() {
+        return Err(format!("npm 返回 HTTP {}", response.status()));
+    }
+    let metadata = response
+        .json::<NpmMetadata>()
+        .await
+        .map_err(|error| format!("解析 dsh 更新信息失败：{error}"))?;
+    let latest = metadata
+        .dist_tags
+        .latest
+        .filter(|version| !version.is_empty())
+        .ok_or("npm 未返回 dsh 的 latest 版本。")?;
+    let current = current_version.unwrap_or_default();
+    let available = is_newer_version(&latest, &current);
+    Ok(DshUpdateStatus {
+        managed: true,
+        current_version: Some(current.clone()),
+        latest_version: Some(latest.clone()),
+        available,
+        status: if available {
+            format!("发现内置 dsh 新版本 {latest}")
+        } else {
+            format!("内置 dsh 已是最新版本 {current}")
+        },
+    })
+}
+
+async fn install_dsh_update_inner(
+    app: &AppHandle,
+    state: &HarnessState,
+    version: String,
+) -> Result<RuntimeStatus, String> {
+    if !is_safe_package_version(&version) {
+        return Err("dsh 版本号无效。".to_string());
+    }
+    if state.runtime_installing.swap(true, Ordering::AcqRel) {
+        return Err("运行时更新正在进行，请等待当前更新完成。".to_string());
+    }
+    let was_running = snapshot(state).running;
+    if was_running {
+        stop_harness_inner(app, state);
+    }
+    let result = async {
+        let node_root =
+            managed_node_root(Some(app)).ok_or("未找到内置 Node.js，请先安装运行时。")?;
+        let runtime_root = preferred_runtime_root(app);
+        let staging = runtime_root.join(format!(".dsh-update-{}-{}", std::process::id(), version));
+        let dsh_root = runtime_root.join("dsh").join(&version);
+        fs::create_dir_all(&staging).map_err(|error| format!("创建 dsh 更新目录失败：{error}"))?;
+        let dsh_staging = staging.join("dsh");
+        fs::create_dir_all(&dsh_staging)
+            .map_err(|error| format!("创建 dsh 临时目录失败：{error}"))?;
+        emit_runtime_progress(
+            app,
+            state,
+            format!("正在安装内置 dsh {version}…"),
+            None,
+            false,
+            None,
+        );
+        install_dsh_package(app, state, &node_root, &dsh_staging, &version)?;
+        if !is_executable(&dsh_executable(&dsh_staging)) {
+            return Err("npm 安装完成，但没有生成 dsh 命令。".to_string());
+        }
+        fs::create_dir_all(runtime_root.join("dsh"))
+            .map_err(|error| format!("创建 dsh 版本目录失败：{error}"))?;
+        if dsh_root.exists() {
+            fs::remove_dir_all(&dsh_root).map_err(|error| format!("替换 dsh 版本失败：{error}"))?;
+        }
+        fs::rename(&dsh_staging, &dsh_root)
+            .map_err(|error| format!("保存 dsh 更新失败：{error}"))?;
+        let _ = fs::remove_dir_all(&staging);
+        emit_runtime_progress(app, state, "内置 dsh 更新完成。", Some(1.0), true, None);
+        Ok(())
+    }
+    .await;
+    state.runtime_installing.store(false, Ordering::Release);
+    if let Err(error) = &result {
+        if was_running {
+            let _ = start_harness_inner(app, state).await;
+        }
+        emit_runtime_progress(
+            app,
+            state,
+            "内置 dsh 更新失败。",
+            None,
+            true,
+            Some(error.clone()),
+        );
+    }
+    result?;
+    if was_running {
+        start_harness_inner(app, state).await?;
+    }
+    Ok(runtime_status_snapshot(app, state))
+}
+
+fn open_external_url(url: &str) -> Result<(), String> {
+    if !url.starts_with("https://") {
+        return Err("只允许打开 HTTPS 更新地址。".to_string());
+    }
+    #[cfg(target_os = "macos")]
+    let result = Command::new("open").arg(url).status();
+    #[cfg(target_os = "windows")]
+    let result = Command::new("cmd").args(["/C", "start", "", url]).status();
+    #[cfg(target_os = "linux")]
+    let result = Command::new("xdg-open").arg(url).status();
+    result
+        .map_err(|error| format!("打开链接失败：{error}"))?
+        .success()
+        .then_some(())
+        .ok_or_else(|| "打开链接失败。".to_string())
+}
+
 fn remember_log(logs: &Arc<Mutex<VecDeque<HarnessLog>>>, log: HarnessLog) {
     if let Ok(mut logs) = logs.lock() {
         logs.push_back(log);
@@ -765,6 +1457,22 @@ fn emit_log(
         stream: stream.to_string(),
         message: message.into(),
     };
+    if let Ok(directory) = app.path().app_data_dir() {
+        let directory = directory.join("logs");
+        if fs::create_dir_all(&directory).is_ok() {
+            if let Ok(mut file) = OpenOptions::new()
+                .create(true)
+                .append(true)
+                .open(directory.join("harness.log"))
+            {
+                let timestamp = SystemTime::now()
+                    .duration_since(UNIX_EPOCH)
+                    .map(|duration| duration.as_secs())
+                    .unwrap_or_default();
+                let _ = writeln!(file, "[{timestamp}] [{}] {}", log.stream, log.message);
+            }
+        }
+    }
     remember_log(logs, log.clone());
     let _ = app.emit("harness-output", log);
 }
@@ -1029,6 +1737,161 @@ async fn install_runtime(
 }
 
 #[tauri::command]
+async fn check_app_update() -> Result<AppUpdateStatus, String> {
+    let release = fetch_latest_release().await?;
+    Ok(app_update_status(&release))
+}
+
+#[tauri::command]
+async fn install_app_update(
+    app: AppHandle,
+    state: State<'_, HarnessState>,
+) -> Result<AppUpdateStatus, String> {
+    install_app_update_inner(&app, &state).await
+}
+
+#[tauri::command]
+async fn check_dsh_update(app: AppHandle) -> Result<DshUpdateStatus, String> {
+    check_dsh_update_inner(&app).await
+}
+
+#[tauri::command]
+async fn install_dsh_update(
+    app: AppHandle,
+    state: State<'_, HarnessState>,
+    version: String,
+) -> Result<RuntimeStatus, String> {
+    install_dsh_update_inner(&app, &state, version).await
+}
+
+#[tauri::command]
+fn open_release_page(url: String) -> Result<(), String> {
+    open_external_url(&url)
+}
+
+fn open_directory(path: &Path) -> Result<(), String> {
+    fs::create_dir_all(path).map_err(|error| format!("创建目录失败：{error}"))?;
+    #[cfg(target_os = "macos")]
+    let result = Command::new("open").arg(path).status();
+    #[cfg(target_os = "windows")]
+    let result = Command::new("explorer.exe").arg(path).status();
+    #[cfg(target_os = "linux")]
+    let result = Command::new("xdg-open").arg(path).status();
+    result
+        .map_err(|error| format!("打开目录失败：{error}"))?
+        .success()
+        .then_some(())
+        .ok_or_else(|| "打开目录失败。".to_string())
+}
+
+fn logs_directory(app: &AppHandle) -> PathBuf {
+    app.path()
+        .app_data_dir()
+        .map(|path| path.join("logs"))
+        .unwrap_or_else(|_| preferred_runtime_root(app).join("../logs"))
+}
+
+#[tauri::command]
+fn open_runtime_directory(app: AppHandle) -> Result<(), String> {
+    open_directory(&preferred_runtime_root(&app))
+}
+
+#[tauri::command]
+fn open_logs_directory(app: AppHandle) -> Result<(), String> {
+    open_directory(&logs_directory(&app))
+}
+
+fn xml_escape(value: &str) -> String {
+    value
+        .replace('&', "&amp;")
+        .replace('<', "&lt;")
+        .replace('>', "&gt;")
+        .replace('"', "&quot;")
+        .replace('\'', "&apos;")
+}
+
+#[tauri::command]
+fn set_launch_at_login(enabled: bool) -> Result<(), String> {
+    let executable = env::current_exe().map_err(|error| format!("获取应用路径失败：{error}"))?;
+
+    #[cfg(target_os = "macos")]
+    {
+        let home = home_directory().ok_or("无法确定用户目录。")?;
+        let agents = home.join("Library/LaunchAgents");
+        let plist = agents.join("com.deepseek.harnessdesk.plist");
+        if enabled {
+            fs::create_dir_all(&agents)
+                .map_err(|error| format!("创建登录启动目录失败：{error}"))?;
+            let contents = format!(
+                "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<!DOCTYPE plist PUBLIC \"-//Apple//DTD PLIST 1.0//EN\" \"http://www.apple.com/DTDs/PropertyList-1.0.dtd\">\n<plist version=\"1.0\"><dict><key>Label</key><string>com.deepseek.harnessdesk</string><key>ProgramArguments</key><array><string>{}</string></array><key>RunAtLoad</key><true/></dict></plist>\n",
+                xml_escape(&executable.to_string_lossy())
+            );
+            fs::write(&plist, contents)
+                .map_err(|error| format!("写入登录启动配置失败：{error}"))?;
+        } else if plist.exists() {
+            fs::remove_file(&plist).map_err(|error| format!("删除登录启动配置失败：{error}"))?;
+        }
+        return Ok(());
+    }
+
+    #[cfg(target_os = "windows")]
+    {
+        let key = "HKCU\\Software\\Microsoft\\Windows\\CurrentVersion\\Run";
+        if enabled {
+            let status = Command::new("reg.exe")
+                .args([
+                    "ADD",
+                    key,
+                    "/V",
+                    "DeepSeekHarnessDesk",
+                    "/T",
+                    "REG_SZ",
+                    "/D",
+                ])
+                .arg(executable)
+                .arg("/F")
+                .status()
+                .map_err(|error| format!("设置登录启动失败：{error}"))?;
+            if !status.success() {
+                return Err("设置登录启动失败。".to_string());
+            }
+        } else {
+            let status = Command::new("reg.exe")
+                .args(["DELETE", key, "/V", "DeepSeekHarnessDesk", "/F"])
+                .status()
+                .map_err(|error| format!("关闭登录启动失败：{error}"))?;
+            if !status.success() && status.code() != Some(1) {
+                return Err("关闭登录启动失败。".to_string());
+            }
+        }
+        return Ok(());
+    }
+
+    #[cfg(target_os = "linux")]
+    {
+        let home = home_directory().ok_or("无法确定用户目录。")?;
+        let autostart = home.join(".config/autostart");
+        let desktop = autostart.join("deepseek-harness-desk.desktop");
+        if enabled {
+            fs::create_dir_all(&autostart)
+                .map_err(|error| format!("创建登录启动目录失败：{error}"))?;
+            let contents = format!(
+                "[Desktop Entry]\nType=Application\nName=DeepSeek Harness Desk\nExec=\\\"{}\\\"\nTerminal=false\nX-GNOME-Autostart-enabled=true\n",
+                executable.to_string_lossy().replace('"', "\\\"")
+            );
+            fs::write(&desktop, contents)
+                .map_err(|error| format!("写入登录启动配置失败：{error}"))?;
+        } else if desktop.exists() {
+            fs::remove_file(&desktop).map_err(|error| format!("删除登录启动配置失败：{error}"))?;
+        }
+        return Ok(());
+    }
+
+    #[allow(unreachable_code)]
+    Err("当前系统暂不支持登录时启动。".to_string())
+}
+
+#[tauri::command]
 async fn start_harness(
     app: AppHandle,
     state: State<'_, HarnessState>,
@@ -1149,6 +2012,12 @@ fn show_main_window<R: tauri::Runtime>(app: &AppHandle<R>) {
 fn setup_tray<R: tauri::Runtime>(app: &mut tauri::App<R>) -> tauri::Result<()> {
     let show = MenuItem::with_id(app, "show", "打开窗口", true, None::<&str>)?;
     let settings = MenuItem::with_id(app, "settings", "设置…", true, None::<&str>)?;
+    let start = MenuItem::with_id(app, "start", "启动 Harness", true, None::<&str>)?;
+    let restart = MenuItem::with_id(app, "restart", "重启 Harness", true, None::<&str>)?;
+    let stop = MenuItem::with_id(app, "stop", "停止 Harness", true, None::<&str>)?;
+    let logs = MenuItem::with_id(app, "logs", "打开运行日志", true, None::<&str>)?;
+    let check_app = MenuItem::with_id(app, "check-app", "检查 App 更新…", true, None::<&str>)?;
+    let check_dsh = MenuItem::with_id(app, "check-dsh", "检查内置 dsh 更新…", true, None::<&str>)?;
     let quit = MenuItem::with_id(
         app,
         "quit",
@@ -1157,7 +2026,9 @@ fn setup_tray<R: tauri::Runtime>(app: &mut tauri::App<R>) -> tauri::Result<()> {
         None::<&str>,
     )?;
     let menu = MenuBuilder::new(app)
-        .items(&[&show, &settings, &quit])
+        .items(&[
+            &show, &settings, &start, &restart, &stop, &logs, &check_app, &check_dsh, &quit,
+        ])
         .build()?;
 
     let icon = tauri::image::Image::from_bytes(include_bytes!(
@@ -1175,6 +2046,30 @@ fn setup_tray<R: tauri::Runtime>(app: &mut tauri::App<R>) -> tauri::Result<()> {
             "settings" => {
                 show_main_window(app);
                 let _ = app.emit("open-settings", ());
+            }
+            "start" => {
+                show_main_window(app);
+                let _ = app.emit("start-harness", ());
+            }
+            "restart" => {
+                show_main_window(app);
+                let _ = app.emit("restart-harness", ());
+            }
+            "stop" => {
+                show_main_window(app);
+                let _ = app.emit("stop-harness", ());
+            }
+            "logs" => {
+                show_main_window(app);
+                let _ = app.emit("open-logs", ());
+            }
+            "check-app" => {
+                show_main_window(app);
+                let _ = app.emit("check-app-update", ());
+            }
+            "check-dsh" => {
+                show_main_window(app);
+                let _ = app.emit("check-dsh-update", ());
             }
             "quit" => app.exit(0),
             _ => {}
@@ -1205,6 +2100,7 @@ pub fn run() {
         last_exit_code: Arc::new(Mutex::new(None)),
         runtime_installing: Arc::new(AtomicBool::new(false)),
         runtime_message: Arc::new(Mutex::new(String::new())),
+        app_update_installing: Arc::new(AtomicBool::new(false)),
     };
 
     tauri::Builder::default()
@@ -1228,6 +2124,14 @@ pub fn run() {
             harness_status,
             runtime_status,
             install_runtime,
+            check_app_update,
+            install_app_update,
+            check_dsh_update,
+            install_dsh_update,
+            open_release_page,
+            open_runtime_directory,
+            open_logs_directory,
+            set_launch_at_login,
             start_harness,
             restart_harness,
             stop_harness,
@@ -1267,5 +2171,21 @@ mod tests {
     fn dsh_candidates_include_path_entries() {
         let candidates = dsh_candidates(None);
         assert!(!candidates.is_empty());
+    }
+
+    #[test]
+    fn versions_compare_numeric_and_prerelease_order() {
+        assert!(is_newer_version("0.2.0", "0.1.0"));
+        assert!(is_newer_version("0.1.0-rc.10", "0.1.0-rc.6"));
+        assert!(is_newer_version("0.1.0", "0.1.0-rc.6"));
+        assert!(!is_newer_version("0.1.0-rc.6", "0.1.0"));
+        assert!(!is_newer_version("v0.2.0", "0.2.0"));
+    }
+
+    #[test]
+    fn package_versions_are_safe_paths() {
+        assert!(is_safe_package_version("0.1.0-rc.7"));
+        assert!(!is_safe_package_version("../../tmp"));
+        assert!(!is_safe_package_version("0.1.0 rc.7"));
     }
 }

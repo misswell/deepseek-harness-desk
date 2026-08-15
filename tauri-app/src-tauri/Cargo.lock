@@ -695,13 +695,14 @@ dependencies = [
 
 [[package]]
 name = "deepseek-harness-desk"
-version = "0.3.4"
+version = "0.3.5"
 dependencies = [
  "objc2",
  "objc2-app-kit",
  "reqwest 0.12.28",
  "serde",
  "serde_json",
+ "sha2",
  "tauri",
  "tauri-build",
  "tauri-plugin-opener",

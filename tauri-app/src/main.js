@@ -25,11 +25,53 @@ const elements = {
   closeLogsButton: document.querySelector("#close-logs-button"),
   settingsPanel: document.querySelector("#settings-panel"),
   closeSettingsButton: document.querySelector("#close-settings-button"),
+  appUpdateBanner: document.querySelector("#app-update-banner"),
+  appUpdateBannerText: document.querySelector("#app-update-banner-text"),
+  appUpdateBannerInstall: document.querySelector("#app-update-banner-install"),
+  appUpdateBannerIgnore: document.querySelector("#app-update-banner-ignore"),
+  appUpdateBannerDismiss: document.querySelector("#app-update-banner-dismiss"),
+  settingsTabs: [...document.querySelectorAll("[data-settings-tab]")],
+  settingsPages: [...document.querySelectorAll("[data-settings-page]")],
+  launchAtLoginToggle: document.querySelector("#launch-at-login-toggle"),
+  restoreLastWindowToggle: document.querySelector("#restore-last-window-toggle"),
   dockIconToggle: document.querySelector("#dock-icon-toggle"),
+  appCurrentVersion: document.querySelector("#app-current-version"),
+  appLatestVersion: document.querySelector("#app-latest-version"),
+  appUpdateStatus: document.querySelector("#app-update-status"),
+  checkAppUpdateButton: document.querySelector("#check-app-update-button"),
+  installAppUpdateButton: document.querySelector("#install-app-update-button"),
+  openReleasePageButton: document.querySelector("#open-release-page-button"),
+  autoCheckAppToggle: document.querySelector("#auto-check-app-toggle"),
+  autoCheckInterval: document.querySelector("#auto-check-interval"),
+  dshCurrentVersion: document.querySelector("#dsh-current-version"),
+  dshLatestVersion: document.querySelector("#dsh-latest-version"),
+  dshUpdateStatus: document.querySelector("#dsh-update-status"),
+  checkDshUpdateButton: document.querySelector("#check-dsh-update-button"),
+  installDshUpdateButton: document.querySelector("#install-dsh-update-button"),
+  autoCheckDshToggle: document.querySelector("#auto-check-dsh-toggle"),
+  autoInstallDshToggle: document.querySelector("#auto-install-dsh-toggle"),
+  updateProgressCard: document.querySelector("#update-progress-card"),
+  updateProgressTitle: document.querySelector("#update-progress-title"),
+  updateProgressMessage: document.querySelector("#update-progress-message"),
+  updateProgressBar: document.querySelector("#update-progress-bar"),
   settingsRuntimePath: document.querySelector("#settings-runtime-path"),
   runtimeInstallStatus: document.querySelector("#runtime-install-status"),
   runtimeInstallButton: document.querySelector("#runtime-install-button"),
   refreshRuntimeButton: document.querySelector("#refresh-runtime-button"),
+  settingsHarnessStatus: document.querySelector("#settings-harness-status"),
+  settingsHarnessVersion: document.querySelector("#settings-harness-version"),
+  settingsHarnessPid: document.querySelector("#settings-harness-pid"),
+  settingsHarnessPort: document.querySelector("#settings-harness-port"),
+  settingsHarnessPath: document.querySelector("#settings-harness-path"),
+  settingsStartHarnessButton: document.querySelector("#settings-start-harness-button"),
+  settingsRestartHarnessButton: document.querySelector("#settings-restart-harness-button"),
+  settingsStopHarnessButton: document.querySelector("#settings-stop-harness-button"),
+  settingsOpenLogsButton: document.querySelector("#settings-open-logs-button"),
+  settingsRefreshHarnessButton: document.querySelector("#settings-refresh-harness-button"),
+  settingsLogDirectory: document.querySelector("#settings-log-directory"),
+  openRuntimeDirectoryButton: document.querySelector("#open-runtime-directory-button"),
+  openLogsDirectoryButton: document.querySelector("#open-logs-directory-button"),
+  aboutVersion: document.querySelector("#about-version"),
   toast: document.querySelector("#toast"),
 };
 
@@ -41,6 +83,17 @@ const state = {
   busy: false,
   frameUrl: "",
   toastTimer: null,
+  appUpdate: null,
+  dshUpdate: null,
+  settingsTab: localStorage.getItem("settingsTab") || "general",
+  automaticUpdateTimer: null,
+  updateChecking: false,
+};
+
+const UPDATE_INTERVALS = {
+  hourly: 60 * 60 * 1000,
+  daily: 24 * 60 * 60 * 1000,
+  weekly: 7 * 24 * 60 * 60 * 1000,
 };
 
 function errorMessage(error) {
@@ -73,6 +126,12 @@ function setBusy(busy) {
   elements.startButton.disabled = busy || running;
   elements.retryButton.disabled = busy || running;
   elements.runtimeInstallButton.disabled = busy || state.runtime?.installing === true;
+  elements.settingsStartHarnessButton.disabled = busy || running;
+  elements.settingsRestartHarnessButton.disabled = busy || !running;
+  elements.settingsStopHarnessButton.disabled = busy || !running;
+  elements.checkAppUpdateButton.disabled = busy;
+  elements.checkDshUpdateButton.disabled = busy || state.runtime?.available !== true;
+  elements.installDshUpdateButton.disabled = busy;
   elements.startButton.textContent = busy ? "启动中…" : running ? "已启动" : "启动 Harness";
   elements.retryButton.textContent = busy ? "启动中…" : "重新启动";
 }
@@ -107,13 +166,60 @@ function renderRuntime() {
   elements.runtimeStatus.classList.toggle("available", runtime.available && !runtime.installing);
   elements.runtimeStatus.classList.toggle("missing", !runtime.available && !runtime.installing);
   elements.settingsRuntimePath.textContent =
-    runtime.path || runtime.message || "首次启动会自动安装 Node.js 和 dsh。";
+    runtime.runtime_root || runtime.path || runtime.message || "首次启动会自动安装 Node.js 和 dsh。";
+  elements.settingsLogDirectory.textContent = runtime.logs_directory || "—";
   elements.runtimeInstallStatus.textContent =
     runtime.message || (runtime.available ? "运行时已就绪。" : "点击安装，应用会自动准备运行环境。");
   elements.runtimeInstallButton.classList.toggle("hidden", runtime.available && !runtime.installing);
   elements.runtimeInstallButton.textContent = runtime.installing ? "安装中…" : "安装运行时";
   elements.runtimeInstallStatus.classList.toggle("active", runtime.installing);
+  elements.dshCurrentVersion.textContent = runtime.version || (runtime.available ? "系统 PATH" : "未安装");
+  elements.settingsHarnessVersion.textContent = runtime.version || "—";
   setBusy(state.busy);
+}
+
+function renderSettingsTab() {
+  const tab = state.settingsTab;
+  for (const button of elements.settingsTabs) {
+    button.classList.toggle("active", button.dataset.settingsTab === tab);
+  }
+  for (const page of elements.settingsPages) {
+    page.classList.toggle("hidden", page.dataset.settingsPage !== tab);
+  }
+  localStorage.setItem("settingsTab", tab);
+}
+
+function renderAppUpdate() {
+  const update = state.appUpdate;
+  if (!update) {
+    elements.appCurrentVersion.textContent = "检查中…";
+    elements.appLatestVersion.textContent = "未检查";
+    elements.appUpdateStatus.textContent = "未检查";
+    elements.aboutVersion.textContent = "版本检查中…";
+    return;
+  }
+  elements.appCurrentVersion.textContent = update.current_version || "—";
+  elements.appLatestVersion.textContent = update.latest_version || "未检查";
+  elements.appUpdateStatus.textContent = update.status || "未检查";
+  elements.aboutVersion.textContent = `版本 ${update.current_version || "—"}`;
+  const available = update.available === true;
+  const ignored = localStorage.getItem("ignoredAppUpdateVersion") === update.latest_version;
+  elements.installAppUpdateButton.classList.toggle("hidden", !available);
+  elements.openReleasePageButton.classList.toggle("hidden", !update.release_url);
+  elements.appUpdateBanner.classList.toggle("hidden", !available || ignored);
+  if (available && !ignored) {
+    elements.appUpdateBannerText.textContent = `发现新版本 ${update.latest_version}`;
+  }
+}
+
+function renderDshUpdate() {
+  const update = state.dshUpdate;
+  if (!update) return;
+  elements.dshCurrentVersion.textContent = update.current_version || (state.runtime?.version || "未安装");
+  elements.dshLatestVersion.textContent = update.latest_version || "未检查";
+  elements.dshUpdateStatus.textContent = update.status || "未检查";
+  elements.installDshUpdateButton.classList.toggle("hidden", update.available !== true);
+  elements.installDshUpdateButton.disabled = update.available !== true || state.busy;
 }
 
 function renderStatus() {
@@ -132,6 +238,16 @@ function renderStatus() {
   elements.harnessStatus.classList.toggle("available", running);
   elements.harnessStatus.classList.toggle("missing", failed);
   elements.portStatus.textContent = state.status?.port ? String(state.status.port) : "—";
+  elements.settingsHarnessStatus.textContent = running
+    ? "运行中"
+    : failed
+      ? "启动失败"
+      : state.phase === "starting"
+        ? "启动中…"
+        : "已停止";
+  elements.settingsHarnessPid.textContent = state.status?.pid ? String(state.status.pid) : "—";
+  elements.settingsHarnessPort.textContent = state.status?.port ? String(state.status.port) : "—";
+  elements.settingsHarnessPath.textContent = state.status?.dsh_path || "—";
   elements.errorMessage.textContent = state.status?.error || "发生未知错误，请查看运行日志。";
   elements.frameContainer.classList.toggle("hidden", !running);
 
@@ -141,6 +257,8 @@ function renderStatus() {
     elements.frameLoading.classList.remove("hidden");
     elements.frame.src = state.status.url;
   }
+  renderAppUpdate();
+  renderDshUpdate();
   setBusy(state.busy);
 }
 
@@ -179,6 +297,7 @@ function closePanels() {
 function showPanel(panel) {
   elements.logsPanel.classList.toggle("hidden", panel !== elements.logsPanel);
   elements.settingsPanel.classList.toggle("hidden", panel !== elements.settingsPanel);
+  if (panel === elements.settingsPanel) renderSettingsTab();
 }
 
 async function refreshRuntime() {
@@ -189,6 +308,126 @@ async function refreshRuntime() {
     elements.runtimeStatus.textContent = "无法检查";
     elements.settingsRuntimePath.textContent = errorMessage(error);
   }
+}
+
+async function checkAppUpdate(interactive = true) {
+  if (state.updateChecking) return state.appUpdate;
+  state.updateChecking = true;
+  elements.checkAppUpdateButton.disabled = true;
+  elements.appUpdateStatus.textContent = "正在检查更新…";
+  try {
+    state.appUpdate = await call("check_app_update");
+    renderAppUpdate();
+    if (state.appUpdate.available) {
+      if (interactive) {
+        showPanel(elements.settingsPanel);
+        state.settingsTab = "updates";
+        renderSettingsTab();
+        setToast(`发现 App 新版本 ${state.appUpdate.latest_version}`);
+      }
+    } else if (interactive) {
+      setToast(state.appUpdate.status || "已是最新版本");
+    }
+    return state.appUpdate;
+  } catch (error) {
+    elements.appUpdateStatus.textContent = errorMessage(error);
+    if (interactive) setToast(errorMessage(error), true);
+    return null;
+  } finally {
+    state.updateChecking = false;
+    setBusy(state.busy);
+  }
+}
+
+async function installAppUpdate() {
+  if (state.busy || state.updateChecking) return;
+  state.updateChecking = true;
+  elements.installAppUpdateButton.disabled = true;
+  elements.appUpdateBannerInstall.disabled = true;
+  try {
+    state.appUpdate = await call("install_app_update");
+    renderAppUpdate();
+    if (state.appUpdate?.status) setToast(state.appUpdate.status);
+  } catch (error) {
+    setToast(errorMessage(error), true);
+  } finally {
+    state.updateChecking = false;
+    elements.appUpdateBannerInstall.disabled = false;
+    setBusy(state.busy);
+  }
+}
+
+async function checkDshUpdate(automaticallyInstall = false, interactive = true) {
+  if (state.updateChecking) return state.dshUpdate;
+  state.updateChecking = true;
+  elements.checkDshUpdateButton.disabled = true;
+  elements.dshUpdateStatus.textContent = "正在检查更新…";
+  try {
+    state.dshUpdate = await call("check_dsh_update");
+    renderDshUpdate();
+    if (state.dshUpdate.available && automaticallyInstall && elements.autoInstallDshToggle.checked) {
+      await installDshUpdate(true);
+    } else if (interactive) {
+      showPanel(elements.settingsPanel);
+      state.settingsTab = "updates";
+      renderSettingsTab();
+      setToast(state.dshUpdate.status || "内置 dsh 已是最新版本");
+    }
+    return state.dshUpdate;
+  } catch (error) {
+    elements.dshUpdateStatus.textContent = errorMessage(error);
+    if (interactive) setToast(errorMessage(error), true);
+    return null;
+  } finally {
+    state.updateChecking = false;
+    setBusy(state.busy);
+  }
+}
+
+async function installDshUpdate(automatically = false) {
+  const version = state.dshUpdate?.latest_version;
+  if (state.busy || !version) return;
+  state.busy = true;
+  renderStatus();
+  try {
+    state.runtime = await call("install_dsh_update", { version });
+    state.dshUpdate = {
+      ...(state.dshUpdate || {}),
+      current_version: state.runtime.version,
+      available: false,
+      status: `内置 dsh 更新完成：${state.runtime.version || version}`,
+    };
+    await refreshStatus();
+    setToast(automatically ? `内置 dsh 已自动更新到 ${version}` : `内置 dsh 已更新到 ${version}`);
+  } catch (error) {
+    setToast(errorMessage(error), true);
+  } finally {
+    state.busy = false;
+    await loadLogs();
+    renderRuntime();
+    renderDshUpdate();
+    renderStatus();
+  }
+}
+
+function scheduleAutomaticUpdateChecks() {
+  if (state.automaticUpdateTimer) {
+    clearTimeout(state.automaticUpdateTimer);
+    clearInterval(state.automaticUpdateTimer);
+    state.automaticUpdateTimer = null;
+  }
+  const appEnabled = elements.autoCheckAppToggle.checked;
+  const dshEnabled = elements.autoCheckDshToggle.checked;
+  if (!appEnabled && !dshEnabled) return;
+  const interval = UPDATE_INTERVALS[elements.autoCheckInterval.value] || UPDATE_INTERVALS.hourly;
+  state.automaticUpdateTimer = window.setTimeout(async () => {
+    if (appEnabled) await checkAppUpdate(false);
+    if (dshEnabled) await checkDshUpdate(true, false);
+    state.automaticUpdateTimer = window.setInterval(async () => {
+      if (elements.autoCheckAppToggle.checked) await checkAppUpdate(false);
+      if (elements.autoCheckDshToggle.checked) await checkDshUpdate(true, false);
+    }, interval);
+  }, 3500);
 }
 
 async function refreshStatus() {
@@ -315,6 +554,43 @@ async function toggleDockIcon() {
   }
 }
 
+async function toggleLaunchAtLogin() {
+  const enabled = elements.launchAtLoginToggle.checked;
+  localStorage.setItem("launchAtLogin", String(enabled));
+  try {
+    await call("set_launch_at_login", { enabled });
+    setToast(enabled ? "已开启登录时启动" : "已关闭登录时启动");
+  } catch (error) {
+    elements.launchAtLoginToggle.checked = !enabled;
+    setToast(errorMessage(error), true);
+  }
+}
+
+function toggleRestoreLastWindow() {
+  localStorage.setItem("restoreLastWindow", String(elements.restoreLastWindowToggle.checked));
+}
+
+async function openRuntimeDirectory() {
+  try {
+    await call("open_runtime_directory");
+  } catch (error) {
+    setToast(errorMessage(error), true);
+  }
+}
+
+async function openLogsDirectory() {
+  try {
+    await call("open_logs_directory");
+  } catch (error) {
+    setToast(errorMessage(error), true);
+  }
+}
+
+function selectSettingsTab(tab) {
+  state.settingsTab = tab;
+  renderSettingsTab();
+}
+
 function openLogs() {
   showPanel(elements.logsPanel);
   loadLogs();
@@ -332,9 +608,53 @@ function bindEvents() {
   });
   elements.closeLogsButton.addEventListener("click", closePanels);
   elements.closeSettingsButton.addEventListener("click", closePanels);
+  for (const tab of elements.settingsTabs) {
+    tab.addEventListener("click", () => selectSettingsTab(tab.dataset.settingsTab));
+  }
+  elements.launchAtLoginToggle.addEventListener("change", toggleLaunchAtLogin);
+  elements.restoreLastWindowToggle.addEventListener("change", toggleRestoreLastWindow);
   elements.dockIconToggle.addEventListener("change", toggleDockIcon);
+  elements.checkAppUpdateButton.addEventListener("click", () => checkAppUpdate(true));
+  elements.installAppUpdateButton.addEventListener("click", () => installAppUpdate());
+  elements.appUpdateBannerInstall.addEventListener("click", () => installAppUpdate());
+  elements.appUpdateBannerIgnore.addEventListener("click", () => {
+    const version = state.appUpdate?.latest_version;
+    if (version) localStorage.setItem("ignoredAppUpdateVersion", version);
+    elements.appUpdateBanner.classList.add("hidden");
+  });
+  elements.appUpdateBannerDismiss.addEventListener("click", () => {
+    elements.appUpdateBanner.classList.add("hidden");
+  });
+  elements.openReleasePageButton.addEventListener("click", async () => {
+    if (!state.appUpdate?.release_url) return;
+    await call("open_release_page", { url: state.appUpdate.release_url }).catch((error) => setToast(errorMessage(error), true));
+  });
+  elements.checkDshUpdateButton.addEventListener("click", () => checkDshUpdate(false, true));
+  elements.installDshUpdateButton.addEventListener("click", () => installDshUpdate(false));
+  elements.autoCheckAppToggle.addEventListener("change", () => {
+    localStorage.setItem("autoCheckForUpdates", String(elements.autoCheckAppToggle.checked));
+    scheduleAutomaticUpdateChecks();
+  });
+  elements.autoCheckDshToggle.addEventListener("change", () => {
+    localStorage.setItem("autoCheckHarnessUpdates", String(elements.autoCheckDshToggle.checked));
+    scheduleAutomaticUpdateChecks();
+  });
+  elements.autoInstallDshToggle.addEventListener("change", () => {
+    localStorage.setItem("autoInstallHarnessUpdates", String(elements.autoInstallDshToggle.checked));
+  });
+  elements.autoCheckInterval.addEventListener("change", () => {
+    localStorage.setItem("autoCheckInterval", elements.autoCheckInterval.value);
+    scheduleAutomaticUpdateChecks();
+  });
   elements.runtimeInstallButton.addEventListener("click", installRuntime);
   elements.refreshRuntimeButton.addEventListener("click", refreshRuntime);
+  elements.openRuntimeDirectoryButton.addEventListener("click", openRuntimeDirectory);
+  elements.openLogsDirectoryButton.addEventListener("click", openLogsDirectory);
+  elements.settingsStartHarnessButton.addEventListener("click", startHarness);
+  elements.settingsRestartHarnessButton.addEventListener("click", restartHarness);
+  elements.settingsStopHarnessButton.addEventListener("click", stopHarness);
+  elements.settingsOpenLogsButton.addEventListener("click", openLogs);
+  elements.settingsRefreshHarnessButton.addEventListener("click", refreshStatus);
   elements.frame.addEventListener("load", () => elements.frameLoading.classList.add("hidden"));
   elements.frame.addEventListener("error", () => {
     elements.frameLoading.textContent = "Harness 页面加载失败，请查看运行日志。";
@@ -359,14 +679,46 @@ async function listenForOutput() {
     if (state.phase === "starting" && progress.message) {
       elements.startupMessage.textContent = progress.message;
     }
+    if (progress.message && state.busy) {
+      elements.dshUpdateStatus.textContent = progress.message;
+    }
     renderRuntime();
   });
   await listen("open-settings", () => showPanel(elements.settingsPanel));
+  await listen("check-app-update", () => checkAppUpdate(true));
+  await listen("check-dsh-update", () => checkDshUpdate(false, true));
+  await listen("open-logs", openLogs);
+  await listen("start-harness", startHarness);
+  await listen("restart-harness", restartHarness);
+  await listen("stop-harness", stopHarness);
+  await listen("refresh-status", async () => Promise.all([refreshStatus(), refreshRuntime()]));
+  await listen("update-progress", (event) => {
+    const progress = event.payload || {};
+    elements.updateProgressCard.classList.toggle("hidden", progress.done === true && !progress.error);
+    elements.updateProgressTitle.textContent = progress.error ? "更新失败" : "正在更新…";
+    elements.updateProgressMessage.textContent = progress.error || progress.message || "准备中…";
+    if (typeof progress.fraction === "number") elements.updateProgressBar.value = progress.fraction;
+    if (progress.error) {
+      setToast(progress.error, true);
+    } else if (progress.done && progress.message) {
+      setToast(progress.message);
+    }
+    if (progress.message && state.settingsTab === "updates") {
+      elements.appUpdateStatus.textContent = progress.message;
+    }
+  });
 }
 
 async function initialize() {
+  elements.launchAtLoginToggle.checked = localStorage.getItem("launchAtLogin") === "true";
+  elements.restoreLastWindowToggle.checked = localStorage.getItem("restoreLastWindow") !== "false";
   elements.dockIconToggle.checked = localStorage.getItem("showDockIcon") !== "false";
+  elements.autoCheckAppToggle.checked = localStorage.getItem("autoCheckForUpdates") !== "false";
+  elements.autoCheckDshToggle.checked = localStorage.getItem("autoCheckHarnessUpdates") !== "false";
+  elements.autoInstallDshToggle.checked = localStorage.getItem("autoInstallHarnessUpdates") !== "false";
+  elements.autoCheckInterval.value = localStorage.getItem("autoCheckInterval") || "hourly";
   bindEvents();
+  renderSettingsTab();
   renderStatus();
   renderLogs();
   await listenForOutput();
@@ -382,6 +734,10 @@ async function initialize() {
   if (!elements.dockIconToggle.checked) {
     await call("set_dock_visibility", { visible: false }).catch((error) => setToast(errorMessage(error), true));
   }
+  await call("set_launch_at_login", { enabled: elements.launchAtLoginToggle.checked }).catch(() => {});
+  if (elements.autoCheckAppToggle.checked) await checkAppUpdate(false);
+  if (elements.autoCheckDshToggle.checked) await checkDshUpdate(false, false);
+  scheduleAutomaticUpdateChecks();
   window.setInterval(refreshStatus, 2500);
 }
 
