@@ -120,6 +120,7 @@ struct GithubAsset {
     name: String,
     browser_download_url: String,
     digest: Option<String>,
+    size: Option<u64>,
 }
 
 #[derive(Deserialize, Debug)]
@@ -622,25 +623,91 @@ fn node_distribution() -> Result<NodeDistribution, String> {
     })
 }
 
-async fn download_runtime_archive(url: &str, destination: &Path) -> Result<(), String> {
+async fn download_runtime_archive(
+    app: &AppHandle,
+    state: &HarnessState,
+    url: &str,
+    destination: &Path,
+) -> Result<(), String> {
+    for attempt in 0..2 {
+        match download_runtime_archive_once(app, state, url, destination).await {
+            Ok(()) => return Ok(()),
+            Err(error) if attempt == 0 && is_retryable_download_error(&error) => {
+                let _ = fs::remove_file(destination);
+                emit_runtime_progress(
+                    app,
+                    state,
+                    "下载连接中断，正在重新尝试…",
+                    Some(0.05),
+                    false,
+                    None,
+                );
+            }
+            Err(error) => {
+                let _ = fs::remove_file(destination);
+                return Err(error);
+            }
+        }
+    }
+
+    let _ = fs::remove_file(destination);
+    Err("下载 Node.js 失败：下载连接重试次数已用尽。".to_string())
+}
+
+async fn download_runtime_archive_once(
+    app: &AppHandle,
+    state: &HarnessState,
+    url: &str,
+    destination: &Path,
+) -> Result<(), String> {
     let client = reqwest::Client::builder()
         .timeout(Duration::from_secs(300))
+        .http1_only()
         .user_agent("DeepSeek Harness Desk")
         .build()
         .map_err(|error| format!("创建运行时下载客户端失败：{error}"))?;
     let response = client
         .get(url)
+        .header("Accept-Encoding", "identity")
         .send()
         .await
         .map_err(|error| format!("下载 Node.js 失败：{error}"))?;
     if !response.status().is_success() {
         return Err(format!("下载 Node.js 失败（HTTP {}）。", response.status()));
     }
-    let bytes = response
-        .bytes()
+    let total = response.content_length();
+    let mut response = response;
+    let mut file = fs::File::create(destination)
+        .map_err(|error| format!("创建 Node.js 安装包文件失败：{error}"))?;
+    let mut downloaded = 0_u64;
+    let mut last_fraction = 0.05_f64;
+    while let Some(chunk) = response
+        .chunk()
         .await
-        .map_err(|error| format!("读取 Node.js 下载内容失败：{error}"))?;
-    fs::write(destination, bytes).map_err(|error| format!("保存 Node.js 安装包失败：{error}"))
+        .map_err(|error| format!("读取 Node.js 下载内容失败：{error}"))?
+    {
+        file.write_all(&chunk)
+            .map_err(|error| format!("保存 Node.js 安装包失败：{error}"))?;
+        downloaded = downloaded.saturating_add(chunk.len() as u64);
+        if let Some(total) = total.filter(|total| *total > 0) {
+            let fraction = 0.05 + (downloaded as f64 / total as f64).min(1.0) * 0.55;
+            if fraction - last_fraction >= 0.02 || downloaded >= total {
+                let percent = (fraction * 100.0).round() as u8;
+                emit_runtime_progress(
+                    app,
+                    state,
+                    format!("正在下载 Node.js… {percent}%"),
+                    Some(fraction),
+                    false,
+                    None,
+                );
+                last_fraction = fraction;
+            }
+        }
+    }
+    file.flush()
+        .map_err(|error| format!("保存 Node.js 安装包失败：{error}"))?;
+    Ok(())
 }
 
 fn shell_literal(path: &Path) -> String {
@@ -834,7 +901,7 @@ async fn install_runtime_inner(app: &AppHandle, state: &HarnessState) -> Result<
         app,
         state,
         "开始安装内置 Node.js 和 DeepSeek Harness…",
-        None,
+        Some(0.0),
         false,
         None,
     );
@@ -857,7 +924,7 @@ async fn install_runtime_inner(app: &AppHandle, state: &HarnessState) -> Result<
                 app,
                 state,
                 format!("正在下载 Node.js {NODE_VERSION}…"),
-                None,
+                Some(0.05),
                 false,
                 None,
             );
@@ -865,8 +932,8 @@ async fn install_runtime_inner(app: &AppHandle, state: &HarnessState) -> Result<
                 "https://nodejs.org/dist/v{NODE_VERSION}/{}",
                 distribution.archive_name
             );
-            download_runtime_archive(&url, &archive).await?;
-            emit_runtime_progress(app, state, "正在解压 Node.js…", None, false, None);
+            download_runtime_archive(app, state, &url, &archive).await?;
+            emit_runtime_progress(app, state, "正在解压 Node.js…", Some(0.68), false, None);
             extract_node_archive(&archive, &extraction, &distribution.archive_name)?;
             let extracted_root = extraction.join(&distribution.extracted_directory);
             if !extracted_root.is_dir() {
@@ -892,11 +959,19 @@ async fn install_runtime_inner(app: &AppHandle, state: &HarnessState) -> Result<
                 app,
                 state,
                 format!("正在安装 DeepSeek Harness {DSH_VERSION}…"),
-                None,
+                Some(0.78),
                 false,
                 None,
             );
             install_dsh_package(app, state, &node_root, &dsh_staging, DSH_VERSION)?;
+            emit_runtime_progress(
+                app,
+                state,
+                "正在整理 Harness 运行时…",
+                Some(0.93),
+                false,
+                None,
+            );
             if !is_executable(&dsh_executable(&dsh_staging)) {
                 return Err("npm 安装完成，但没有生成 dsh 命令。".to_string());
             }
@@ -952,6 +1027,19 @@ fn emit_update_progress(
             error,
         },
     );
+}
+
+fn is_retryable_download_error(error: &str) -> bool {
+    [
+        "error decoding response body",
+        "error reading a body",
+        "unexpected end of file",
+        "connection reset",
+        "connection closed",
+        "timed out",
+    ]
+    .iter()
+    .any(|fragment| error.to_ascii_lowercase().contains(fragment))
 }
 
 async fn fetch_latest_release() -> Result<GithubRelease, String> {
@@ -1049,26 +1137,77 @@ async fn download_update_asset(
     asset: &GithubAsset,
     destination: &Path,
 ) -> Result<(), String> {
+    for attempt in 0..2 {
+        match download_update_asset_once(app, asset, destination).await {
+            Ok(()) => return Ok(()),
+            Err(error) if attempt == 0 && is_retryable_download_error(&error) => {
+                let _ = fs::remove_file(destination);
+                emit_update_progress(app, "下载连接中断，正在重新尝试…", Some(0.05), false, None);
+            }
+            Err(error) => {
+                let _ = fs::remove_file(destination);
+                return Err(error);
+            }
+        }
+    }
+
+    let _ = fs::remove_file(destination);
+    Err("下载 App 更新失败：下载连接重试次数已用尽。".to_string())
+}
+
+async fn download_update_asset_once(
+    app: &AppHandle,
+    asset: &GithubAsset,
+    destination: &Path,
+) -> Result<(), String> {
     emit_update_progress(app, "正在下载 App 更新…", Some(0.05), false, None);
     let client = reqwest::Client::builder()
         .timeout(Duration::from_secs(300))
+        .http1_only()
         .user_agent(format!("DeepSeek Harness Desk/{APP_VERSION}"))
         .build()
         .map_err(|error| format!("创建 App 下载客户端失败：{error}"))?;
     let response = client
         .get(&asset.browser_download_url)
         .header("Accept", "application/octet-stream")
+        .header("Accept-Encoding", "identity")
         .send()
         .await
         .map_err(|error| format!("下载 App 更新失败：{error}"))?;
     if !response.status().is_success() {
         return Err(format!("下载 App 更新失败（HTTP {}）", response.status()));
     }
-    let bytes = response
-        .bytes()
+    let total = response.content_length().or(asset.size);
+    let mut response = response;
+    let mut file =
+        fs::File::create(destination).map_err(|error| format!("创建 App 更新文件失败：{error}"))?;
+    let mut downloaded = 0_u64;
+    let mut last_fraction = 0.05_f64;
+    while let Some(chunk) = response
+        .chunk()
         .await
-        .map_err(|error| format!("读取 App 更新失败：{error}"))?;
-    fs::write(destination, &bytes).map_err(|error| format!("保存 App 更新失败：{error}"))?;
+        .map_err(|error| format!("读取 App 更新失败：{error}"))?
+    {
+        file.write_all(&chunk)
+            .map_err(|error| format!("保存 App 更新失败：{error}"))?;
+        downloaded = downloaded.saturating_add(chunk.len() as u64);
+        if let Some(total) = total.filter(|total| *total > 0) {
+            let fraction = 0.05 + (downloaded as f64 / total as f64).min(1.0) * 0.70;
+            if fraction - last_fraction >= 0.02 || downloaded >= total {
+                let percent = (fraction * 100.0).round() as u8;
+                emit_update_progress(
+                    app,
+                    format!("正在下载 App 更新… {percent}%"),
+                    Some(fraction),
+                    false,
+                    None,
+                );
+                last_fraction = fraction;
+            }
+        }
+    }
+    file.flush()
+        .map_err(|error| format!("保存 App 更新失败：{error}"))?;
     emit_update_progress(app, "正在校验 App 更新…", Some(0.8), false, None);
     if let Some(expected) = asset.digest.as_deref() {
         verify_sha256(destination, expected)?;
@@ -1380,11 +1519,12 @@ async fn install_dsh_update_inner(
             app,
             state,
             format!("正在安装内置 dsh {version}…"),
-            None,
+            Some(0.08),
             false,
             None,
         );
         install_dsh_package(app, state, &node_root, &dsh_staging, &version)?;
+        emit_runtime_progress(app, state, "正在校验内置 dsh…", Some(0.82), false, None);
         if !is_executable(&dsh_executable(&dsh_staging)) {
             return Err("npm 安装完成，但没有生成 dsh 命令。".to_string());
         }

@@ -166,6 +166,14 @@
 
             <section class="settings-page hidden" data-settings-page="updates" role="tabpanel">
               <div class="settings-list">
+                <div class="update-progress hidden" id="update-progress-card" role="status" aria-live="polite">
+                  <div class="update-progress-heading">
+                    <strong id="update-progress-title">正在更新…</strong>
+                    <span id="update-progress-percent">0%</span>
+                  </div>
+                  <span id="update-progress-message">准备中…</span>
+                  <progress id="update-progress-bar" max="1" value="0" aria-label="更新进度"></progress>
+                </div>
                 <div class="settings-section-heading">App 壳子</div>
                 <div class="settings-group">
                   <div class="setting-row stacked update-setting-row">
@@ -218,11 +226,6 @@
                     <span><strong>自动安装内置 dsh 更新</strong><small>发现新版后自动安装，并重启 Harness。</small></span>
                     <input type="checkbox" id="auto-install-dsh-toggle" />
                   </label>
-                  <div class="update-progress hidden" id="update-progress-card">
-                    <strong id="update-progress-title">正在更新…</strong>
-                    <span id="update-progress-message">准备中…</span>
-                    <progress id="update-progress-bar" max="1" value="0"></progress>
-                  </div>
                 </div>
                 <p class="setting-note">更新过程会保留当前版本；安装完成后自动切换到新版本。系统 PATH 中手动安装的 dsh 不会被修改。</p>
               </div>

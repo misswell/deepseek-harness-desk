@@ -66,6 +66,9 @@ jobs:
       - name: Install frontend dependencies
         run: npm ci --prefix tauri-app
 
+      - name: Clean old test package outputs
+        run: node scripts/clean_test_packages.mjs
+
       - name: Build universal macOS package
         uses: tauri-apps/tauri-action@v0
         env:
@@ -107,6 +110,9 @@ jobs:
 
       - name: Install frontend dependencies
         run: npm ci --prefix tauri-app
+
+      - name: Clean old test package outputs
+        run: node scripts/clean_test_packages.mjs
 
       - name: Build Windows package
         uses: tauri-apps/tauri-action@v0
@@ -151,6 +157,9 @@ jobs:
 
       - name: Install frontend dependencies
         run: npm ci --prefix tauri-app
+
+      - name: Clean old test package outputs
+        run: node scripts/clean_test_packages.mjs
 
       - name: Build Linux package
         uses: tauri-apps/tauri-action@v0

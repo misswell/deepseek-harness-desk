@@ -1,12 +1,16 @@
 {
   "name": "deepseek-harness-desk",
   "private": true,
-  "version": "0.3.6",
+  "version": "0.3.7",
   "type": "module",
   "engines": {
     "node": ">=18"
   },
   "scripts": {
+    "clean:packages": "node ../scripts/clean_test_packages.mjs",
+    "build": "npm run clean:packages && tauri build",
+    "build:debug": "npm run clean:packages && tauri build --debug",
+    "pretauri": "node ../scripts/clean_test_packages.mjs",
     "tauri": "tauri"
   },
   "devDependencies": {

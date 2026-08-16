@@ -16,7 +16,9 @@ npm run tauri dev
 ## 构建
 
 ```bash
-npm run tauri build
+npm run build
 ```
+
+测试包构建使用 `npm run build:debug`。这两个构建命令都会先清理仓库 `dist/` 和 Tauri 本地 bundle 目录中的旧测试包，不会删除 GitHub Release 上的正式资产。
 
 图标由仓库中的 `Assets/DeepSeekHarnessIcon-Prepared-1024.png` 生成，macOS、Windows 和 Linux 包使用同一套品牌资源。macOS 发布包为 Apple Silicon/Intel 通用包。

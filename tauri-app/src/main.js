@@ -53,6 +53,7 @@ const elements = {
   updateProgressCard: document.querySelector("#update-progress-card"),
   updateProgressTitle: document.querySelector("#update-progress-title"),
   updateProgressMessage: document.querySelector("#update-progress-message"),
+  updateProgressPercent: document.querySelector("#update-progress-percent"),
   updateProgressBar: document.querySelector("#update-progress-bar"),
   settingsRuntimePath: document.querySelector("#settings-runtime-path"),
   runtimeInstallStatus: document.querySelector("#runtime-install-status"),
@@ -83,6 +84,8 @@ const state = {
   busy: false,
   frameUrl: "",
   toastTimer: null,
+  updateProgressTimer: null,
+  updateKind: null,
   appUpdate: null,
   dshUpdate: null,
   settingsTab: localStorage.getItem("settingsTab") || "general",
@@ -118,6 +121,38 @@ function setToast(message, isError = false) {
   elements.toast.classList.remove("hidden");
   clearTimeout(state.toastTimer);
   state.toastTimer = setTimeout(() => elements.toast.classList.add("hidden"), 3800);
+}
+
+function showUpdatesPanel() {
+  showPanel(elements.settingsPanel);
+  state.settingsTab = "updates";
+  renderSettingsTab();
+}
+
+function renderUpdateProgress({ title, message, fraction, done = false, error = null }) {
+  if (state.updateProgressTimer) {
+    clearTimeout(state.updateProgressTimer);
+    state.updateProgressTimer = null;
+  }
+
+  const current = Number(elements.updateProgressBar.value) || 0;
+  const value = typeof fraction === "number"
+    ? Math.min(1, Math.max(0, fraction))
+    : current;
+  const percent = Math.round(value * 100);
+  elements.updateProgressCard.classList.remove("hidden");
+  elements.updateProgressTitle.textContent = error ? "更新失败" : title || "正在更新…";
+  elements.updateProgressMessage.textContent = error || message || "准备中…";
+  elements.updateProgressPercent.textContent = error ? "失败" : `${percent}%`;
+  elements.updateProgressBar.value = value;
+  elements.updateProgressBar.setAttribute("aria-valuenow", String(percent));
+
+  if (done && !error) {
+    state.updateProgressTimer = window.setTimeout(() => {
+      elements.updateProgressCard.classList.add("hidden");
+      state.updateProgressTimer = null;
+    }, 2400);
+  }
 }
 
 function setBusy(busy) {
@@ -322,9 +357,7 @@ async function checkAppUpdate(interactive = true) {
     renderAppUpdate();
     if (state.appUpdate.available) {
       if (interactive) {
-        showPanel(elements.settingsPanel);
-        state.settingsTab = "updates";
-        renderSettingsTab();
+        showUpdatesPanel();
         setToast(`发现 App 新版本 ${state.appUpdate.latest_version}`);
       }
     } else if (interactive) {
@@ -343,6 +376,13 @@ async function checkAppUpdate(interactive = true) {
 
 async function installAppUpdate() {
   if (state.busy || state.updateChecking) return;
+  showUpdatesPanel();
+  state.updateKind = "app";
+  renderUpdateProgress({
+    title: "正在更新 App…",
+    message: "准备下载更新包…",
+    fraction: 0.01,
+  });
   state.updateChecking = true;
   elements.installAppUpdateButton.disabled = true;
   elements.appUpdateBannerInstall.disabled = true;
@@ -351,7 +391,14 @@ async function installAppUpdate() {
     renderAppUpdate();
     if (state.appUpdate?.status) setToast(state.appUpdate.status);
   } catch (error) {
-    setToast(errorMessage(error), true);
+    const message = errorMessage(error);
+    renderUpdateProgress({
+      title: "App 更新失败",
+      message,
+      error: message,
+      done: true,
+    });
+    setToast(message, true);
   } finally {
     state.updateChecking = false;
     elements.appUpdateBannerInstall.disabled = false;
@@ -370,9 +417,7 @@ async function checkDshUpdate(automaticallyInstall = false, interactive = true) 
     if (state.dshUpdate.available && automaticallyInstall && elements.autoInstallDshToggle.checked) {
       await installDshUpdate(true);
     } else if (interactive) {
-      showPanel(elements.settingsPanel);
-      state.settingsTab = "updates";
-      renderSettingsTab();
+      showUpdatesPanel();
       setToast(state.dshUpdate.status || "内置 dsh 已是最新版本");
     }
     return state.dshUpdate;
@@ -389,6 +434,13 @@ async function checkDshUpdate(automaticallyInstall = false, interactive = true) 
 async function installDshUpdate(automatically = false) {
   const version = state.dshUpdate?.latest_version;
   if (state.busy || !version) return;
+  if (!automatically) showUpdatesPanel();
+  state.updateKind = "dsh";
+  renderUpdateProgress({
+    title: "正在更新内置 dsh…",
+    message: `准备安装 ${version}…`,
+    fraction: 0.02,
+  });
   state.busy = true;
   renderStatus();
   try {
@@ -402,7 +454,14 @@ async function installDshUpdate(automatically = false) {
     await refreshStatus();
     setToast(automatically ? `内置 dsh 已自动更新到 ${version}` : `内置 dsh 已更新到 ${version}`);
   } catch (error) {
-    setToast(errorMessage(error), true);
+    const message = errorMessage(error);
+    renderUpdateProgress({
+      title: "内置 dsh 更新失败",
+      message,
+      error: message,
+      done: true,
+    });
+    setToast(message, true);
   } finally {
     state.busy = false;
     await loadLogs();
@@ -684,6 +743,16 @@ async function listenForOutput() {
     if (progress.message && state.busy) {
       elements.dshUpdateStatus.textContent = progress.message;
     }
+    if (state.updateKind === "dsh") {
+      renderUpdateProgress({
+        title: progress.error ? "内置 dsh 更新失败" : "正在更新内置 dsh…",
+        message: progress.message,
+        fraction: progress.fraction,
+        done: progress.done === true,
+        error: progress.error,
+      });
+      if (progress.error) setToast(progress.error, true);
+    }
     renderRuntime();
   });
   await listen("open-settings", () => showPanel(elements.settingsPanel));
@@ -696,10 +765,13 @@ async function listenForOutput() {
   await listen("refresh-status", async () => Promise.all([refreshStatus(), refreshRuntime()]));
   await listen("update-progress", (event) => {
     const progress = event.payload || {};
-    elements.updateProgressCard.classList.toggle("hidden", progress.done === true && !progress.error);
-    elements.updateProgressTitle.textContent = progress.error ? "更新失败" : "正在更新…";
-    elements.updateProgressMessage.textContent = progress.error || progress.message || "准备中…";
-    if (typeof progress.fraction === "number") elements.updateProgressBar.value = progress.fraction;
+    renderUpdateProgress({
+      title: "正在更新 App…",
+      message: progress.message,
+      fraction: progress.fraction,
+      done: progress.done === true,
+      error: progress.error,
+    });
     if (progress.error) {
       setToast(progress.error, true);
     } else if (progress.done && progress.message) {
