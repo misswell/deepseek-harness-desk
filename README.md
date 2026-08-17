@@ -2,7 +2,7 @@
 
 原生 SwiftUI macOS 桌面客户端，用于启动并承载官方 DeepSeek Harness Web UI。
 
-当前版本：0.2.25
+当前版本：0.2.26
 
 ## 下载与安装
 

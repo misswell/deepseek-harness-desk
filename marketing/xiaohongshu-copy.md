@@ -1,6 +1,6 @@
 # DeepSeek Harness Desk · 小红书推广文案（谦逊版）
 
-> 项目：DeepSeek Harness Desk v0.2.25（原生 SwiftUI macOS 客户端，承载官方 DeepSeek Harness Web UI）
+> 项目：DeepSeek Harness Desk v0.2.26（原生 SwiftUI macOS 客户端，承载官方 DeepSeek Harness Web UI）
 > 封面图：`marketing/xiaohongshu-cover-v0.2.10.png`
 
 ---
@@ -41,7 +41,7 @@ App 和内置 dsh 分开更新，带校验，装坏了会自动回滚，不至�
 
 适用人群大概是：Mac（macOS 14+）用户、喜欢 DeepSeek、又不想折腾环境的人。
 
-目前版本 v0.2.25，GitHub 可直接下载，有 Apple 签名和公证，装起来比较放心。
+目前版本 v0.2.26，GitHub 可直接下载，有 Apple 签名和公证，装起来比较放心。
 
 要是觉得有用可以评论区聊聊，人多了我再写个安装说明～ 说得不对的地方也请多包涵。
 
