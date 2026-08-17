@@ -1,8 +1,10 @@
 # DeepSeek Harness Desk
 
-当前桌面版正在迁移到 Tauri v2，入口位于 [`tauri-app`](/Users/guofeng/Code/solo/deepseek-harness-desk/tauri-app)。Tauri 版本使用单一固定窗口、原生拖动区域和系统托盘，解决旧 SwiftUI/AppKit 版本在 macOS 15 上遇到的重复窗口、顶栏拖动和隐藏后无法唤醒问题。
+DeepSeek Harness Desk 当前正式版是基于 **Tauri v2** 构建的跨平台桌面客户端，不是 SwiftUI 原生应用。应用代码位于 [`tauri-app`](tauri-app)，使用 Rust、WebView 和系统原生能力，支持 macOS、Windows 与 Linux。
 
-## Tauri 版
+当前版本：0.3.8。安装包请从 [GitHub Releases](https://github.com/misswell/deepseek-harness-desk/releases/latest) 下载。
+
+## 开发
 
 ```bash
 cd tauri-app
@@ -16,8 +18,8 @@ Tauri 版功能包括：启动、停止、重启 Harness；自动选择 `3080–
 
 macOS 发布包为 Apple Silicon/Intel 通用包；Windows 和 Linux 也会随发布版本提供对应安装包。
 
-## 旧版工程
+## 旧版 SwiftUI 工程
 
-根目录的 `DeepSeekHarnessDesk.xcodeproj` 是迁移前的 SwiftUI macOS 工程，仅用于兼容旧版本和参考。它仍保留 managed Node.js、更新器等旧功能，Tauri 版的后续迁移会逐项补齐。
+根目录的 `DeepSeekHarnessDesk.xcodeproj` 是迁移前的 SwiftUI/AppKit macOS 工程，仅用于兼容旧版本和代码参考，不再是当前正式发布实现。
 
 DeepSeek Harness 由 DeepSeek AI 开发。DeepSeek Harness Desk 是独立的第三方项目，不隶属于 DeepSeek AI，也未获得其认可或赞助。
