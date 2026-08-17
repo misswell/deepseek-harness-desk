@@ -16,6 +16,8 @@ npm run tauri dev
 
 Tauri 版功能包括：启动、停止、重启 Harness；自动选择 `3080–3099` 端口；异步 HTTP 健康检查；stdout/stderr 日志；固定单窗口；透明自定义顶栏；菜单栏/系统托盘唤醒；Dock 图标开关；macOS、Windows、Linux 窗口控制。
 
+主窗口支持快捷键缩放：macOS 使用 `⌘ +` / `⌘ -` / `⌘ 0`，Windows 和 Linux 使用 `Ctrl +` / `Ctrl -` / `Ctrl 0`，缩放范围为 75%–175%，设置会自动保存。
+
 macOS 会分别发布 Apple Silicon（arm64）和 Intel（x86_64）安装包，用户可按处理器架构下载；Windows 和 Linux 也会随版本提供对应安装包。
 
 ## 旧版 SwiftUI 工程

@@ -1,6 +1,15 @@
+import {
+  DEFAULT_ZOOM,
+  ZOOM_STEP,
+  clampZoom,
+  zoomFromShortcut,
+} from "./zoom.js";
+
 const tauri = window.__TAURI__;
 const invoke = tauri?.core?.invoke;
 const listen = tauri?.event?.listen;
+const currentWebview = tauri?.webviewWindow?.getCurrentWebviewWindow?.() || null;
+const ZOOM_STORAGE_KEY = "uiZoom";
 
 const elements = {
   frameContainer: document.querySelector("#frame-container"),
@@ -91,6 +100,7 @@ const state = {
   settingsTab: localStorage.getItem("settingsTab") || "general",
   automaticUpdateTimer: null,
   updateChecking: false,
+  zoom: DEFAULT_ZOOM,
 };
 
 const UPDATE_INTERVALS = {
@@ -121,6 +131,54 @@ function setToast(message, isError = false) {
   elements.toast.classList.remove("hidden");
   clearTimeout(state.toastTimer);
   state.toastTimer = setTimeout(() => elements.toast.classList.add("hidden"), 3800);
+}
+
+function storedZoom() {
+  const value = Number.parseFloat(localStorage.getItem(ZOOM_STORAGE_KEY));
+  return Number.isFinite(value) ? clampZoom(value) : DEFAULT_ZOOM;
+}
+
+async function applyZoom(zoom, { persist = true, announce = false } = {}) {
+  const nextZoom = clampZoom(zoom);
+  state.zoom = nextZoom;
+  if (persist) localStorage.setItem(ZOOM_STORAGE_KEY, String(nextZoom));
+
+  let appliedByWebview = false;
+  if (currentWebview?.setZoom) {
+    try {
+      await currentWebview.setZoom(nextZoom);
+      appliedByWebview = true;
+    } catch (error) {
+      console.warn("无法设置原生 WebView 缩放，改用页面缩放", error);
+    }
+  }
+  if (!appliedByWebview) {
+    document.documentElement.style.zoom = String(nextZoom);
+  }
+
+  if (announce) setToast(`界面缩放：${Math.round(nextZoom * 100)}%`);
+  return nextZoom;
+}
+
+function handleZoomShortcut(event) {
+  const nextZoom = zoomFromShortcut(event, state.zoom);
+  if (nextZoom === null) return;
+
+  event.preventDefault();
+  event.stopPropagation();
+  void applyZoom(nextZoom, { announce: true }).catch((error) => {
+    setToast(errorMessage(error), true);
+  });
+}
+
+function bindFrameZoomShortcuts() {
+  try {
+    const frameWindow = elements.frame.contentWindow;
+    frameWindow?.addEventListener("keydown", handleZoomShortcut, true);
+  } catch {
+    // Cross-origin Harness frames do not expose their event target; the
+    // native menu accelerators still handle shortcuts while the frame is focused.
+  }
 }
 
 function showUpdatesPanel() {
@@ -658,6 +716,7 @@ function openLogs() {
 }
 
 function bindEvents() {
+  window.addEventListener("keydown", handleZoomShortcut, true);
   elements.startButton.addEventListener("click", startHarness);
   elements.retryButton.addEventListener("click", startHarness);
   elements.startupLogsButton.addEventListener("click", openLogs);
@@ -716,7 +775,10 @@ function bindEvents() {
   elements.settingsStopHarnessButton.addEventListener("click", stopHarness);
   elements.settingsOpenLogsButton.addEventListener("click", openLogs);
   elements.settingsRefreshHarnessButton.addEventListener("click", refreshStatus);
-  elements.frame.addEventListener("load", () => elements.frameLoading.classList.add("hidden"));
+  elements.frame.addEventListener("load", () => {
+    elements.frameLoading.classList.add("hidden");
+    bindFrameZoomShortcuts();
+  });
   elements.frame.addEventListener("error", () => {
     elements.frameLoading.textContent = "Harness 页面加载失败，请查看运行日志。";
     elements.frameLoading.classList.remove("hidden");
@@ -756,6 +818,9 @@ async function listenForOutput() {
     renderRuntime();
   });
   await listen("open-settings", () => showPanel(elements.settingsPanel));
+  await listen("zoom-in", () => applyZoom(state.zoom + ZOOM_STEP, { announce: true }));
+  await listen("zoom-out", () => applyZoom(state.zoom - ZOOM_STEP, { announce: true }));
+  await listen("zoom-reset", () => applyZoom(DEFAULT_ZOOM, { announce: true }));
   await listen("check-app-update", () => checkAppUpdate(true));
   await listen("check-dsh-update", () => checkDshUpdate(false, true));
   await listen("open-logs", openLogs);
@@ -784,6 +849,8 @@ async function listenForOutput() {
 }
 
 async function initialize() {
+  state.zoom = storedZoom();
+  await applyZoom(state.zoom, { persist: false });
   elements.launchAtLoginToggle.checked = localStorage.getItem("launchAtLogin") === "true";
   elements.restoreLastWindowToggle.checked = localStorage.getItem("restoreLastWindow") !== "false";
   elements.dockIconToggle.checked = localStorage.getItem("showDockIcon") !== "false";

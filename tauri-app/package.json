@@ -10,6 +10,7 @@
     "clean:packages": "node ../scripts/clean_test_packages.mjs",
     "build": "npm run clean:packages && tauri build",
     "build:debug": "npm run clean:packages && tauri build --debug",
+    "test:zoom": "node tests/zoom.test.js",
     "pretauri": "node ../scripts/clean_test_packages.mjs",
     "tauri": "tauri"
   },

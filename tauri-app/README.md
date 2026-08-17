@@ -22,3 +22,5 @@ npm run build
 测试包构建使用 `npm run build:debug`。这两个构建命令都会先清理仓库 `dist/` 和 Tauri 本地 bundle 目录中的旧测试包，不会删除 GitHub Release 上的正式资产。
 
 图标由仓库中的 `Assets/DeepSeekHarnessIcon-Prepared-1024.png` 生成，macOS、Windows 和 Linux 包使用同一套品牌资源。macOS 发布时分别构建 Apple Silicon（arm64）和 Intel（x86_64）安装包。
+
+主窗口支持快捷键缩放：macOS 使用 `⌘ +` / `⌘ -` / `⌘ 0`，Windows 和 Linux 使用 `Ctrl +` / `Ctrl -` / `Ctrl 0`，缩放范围为 75%–175%，设置会自动保存。

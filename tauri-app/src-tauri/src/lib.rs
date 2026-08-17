@@ -11,7 +11,7 @@ use std::sync::atomic::{AtomicBool, AtomicU16, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
-use tauri::menu::{MenuBuilder, MenuItem};
+use tauri::menu::{MenuBuilder, MenuItem, SubmenuBuilder};
 use tauri::tray::{MouseButton, TrayIconBuilder, TrayIconEvent};
 use tauri::{AppHandle, Emitter, Manager, RunEvent, State, WebviewWindow, WindowEvent};
 
@@ -2208,6 +2208,19 @@ fn show_main_window<R: tauri::Runtime>(app: &AppHandle<R>) {
     }
 }
 
+fn setup_app_menu<R: tauri::Runtime>(app: &mut tauri::App<R>) -> tauri::Result<()> {
+    let zoom_in = MenuItem::with_id(app, "zoom-in", "放大", true, Some("CmdOrCtrl+Shift+="))?;
+    let zoom_out = MenuItem::with_id(app, "zoom-out", "缩小", true, Some("CmdOrCtrl+-"))?;
+    let zoom_reset =
+        MenuItem::with_id(app, "zoom-reset", "恢复默认大小", true, Some("CmdOrCtrl+0"))?;
+    let view = SubmenuBuilder::new(app, "查看")
+        .items(&[&zoom_in, &zoom_out, &zoom_reset])
+        .build()?;
+    let menu = MenuBuilder::new(app).item(&view).build()?;
+    app.set_menu(menu)?;
+    Ok(())
+}
+
 #[cfg(feature = "tray-icon")]
 fn setup_tray<R: tauri::Runtime>(app: &mut tauri::App<R>) -> tauri::Result<()> {
     let show = MenuItem::with_id(app, "show", "打开窗口", true, None::<&str>)?;
@@ -2310,9 +2323,22 @@ pub fn run() {
         .plugin(tauri_plugin_opener::init())
         .manage(state)
         .setup(|app| {
+            setup_app_menu(app)?;
             #[cfg(feature = "tray-icon")]
             setup_tray(app)?;
             Ok(())
+        })
+        .on_menu_event(|app, event| match event.id().as_ref() {
+            "zoom-in" => {
+                let _ = app.emit("zoom-in", ());
+            }
+            "zoom-out" => {
+                let _ = app.emit("zoom-out", ());
+            }
+            "zoom-reset" => {
+                let _ = app.emit("zoom-reset", ());
+            }
+            _ => {}
         })
         .on_window_event(|window, event| {
             if let WindowEvent::CloseRequested { api, .. } = event {
