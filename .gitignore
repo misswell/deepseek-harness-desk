@@ -3,6 +3,7 @@
 # Xcode
 DerivedData/
 build/
+build-*/
 *.xcuserstate
 xcuserdata/
 
