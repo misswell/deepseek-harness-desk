@@ -1135,7 +1135,14 @@ fn platform_app_asset<'a>(release: &'a GithubRelease) -> Option<&'a GithubAsset>
 
     #[cfg(target_os = "macos")]
     {
-        asset(&|name| name.ends_with(".app.tar.gz"))
+        #[cfg(target_arch = "aarch64")]
+        let architecture_asset = asset(&|name| name.ends_with("_aarch64.app.tar.gz"));
+        #[cfg(target_arch = "x86_64")]
+        let architecture_asset = asset(&|name| name.ends_with("_x64.app.tar.gz"));
+
+        architecture_asset
+            .or_else(|| asset(&|name| name.ends_with("_universal.app.tar.gz")))
+            .or_else(|| asset(&|name| name.ends_with(".app.tar.gz")))
             .or_else(|| asset(&|name| name.ends_with(".dmg")))
     }
     #[cfg(target_os = "windows")]
@@ -2406,5 +2413,34 @@ mod tests {
         assert!(is_retryable_download_error(
             "error sending request for url (https://github.com/example)"
         ));
+    }
+
+    #[test]
+    fn app_update_selects_the_current_macos_architecture() {
+        let release = GithubRelease {
+            tag_name: "v0.3.9".to_string(),
+            html_url: "https://github.com/example/release".to_string(),
+            body: None,
+            assets: vec![
+                GithubAsset {
+                    name: "DeepSeek.Harness.Desk_x64.app.tar.gz".to_string(),
+                    browser_download_url: "https://example/x64".to_string(),
+                    digest: None,
+                    size: None,
+                },
+                GithubAsset {
+                    name: "DeepSeek.Harness.Desk_aarch64.app.tar.gz".to_string(),
+                    browser_download_url: "https://example/aarch64".to_string(),
+                    digest: None,
+                    size: None,
+                },
+            ],
+        };
+        let selected = platform_app_asset(&release).expect("architecture asset");
+
+        #[cfg(target_arch = "aarch64")]
+        assert!(selected.name.ends_with("_aarch64.app.tar.gz"));
+        #[cfg(target_arch = "x86_64")]
+        assert!(selected.name.ends_with("_x64.app.tar.gz"));
     }
 }
