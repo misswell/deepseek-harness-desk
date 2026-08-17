@@ -2,10 +2,47 @@ import AppKit
 import SwiftUI
 
 fileprivate enum WindowChromeMetrics {
-    static let titlebarHeight: CGFloat = 36
-    // Leave enough room for the three AppKit traffic-light buttons and a
-    // small hit slop so the drag layer cannot steal their clicks.
+    static let titlebarHeight: CGFloat = 44
+    // Leave enough room for the three AppKit traffic-light buttons. The
+    // event monitor and the view overlay use the same boundary.
     static let trafficLightReservedWidth: CGFloat = 92
+}
+
+/// Geometry for the window's top drag strip.
+///
+/// The window content view of a SwiftUI scene is a flipped `NSHostingView`
+/// (origin at the top-left, y grows downward), while a plain AppKit content
+/// view measures from the bottom-left. All strip math must honor `isFlipped`,
+/// otherwise the strip ends up at the bottom of the window.
+enum WindowDragStrip {
+    static func frame(in contentView: NSView) -> NSRect {
+        let y = contentView.isFlipped
+            ? 0
+            : contentView.bounds.maxY - WindowChromeMetrics.titlebarHeight
+        return NSRect(
+            x: WindowChromeMetrics.trafficLightReservedWidth,
+            y: y,
+            width: max(0, contentView.bounds.width - WindowChromeMetrics.trafficLightReservedWidth),
+            height: min(WindowChromeMetrics.titlebarHeight, contentView.bounds.height)
+        )
+    }
+
+    /// Whether a point (already in the content view's coordinate space) lies
+    /// inside the drag strip.
+    static func contains(point: NSPoint, in contentView: NSView) -> Bool {
+        let distanceFromTop = contentView.isFlipped
+            ? point.y
+            : contentView.bounds.maxY - point.y
+        return distanceFromTop >= 0 &&
+            distanceFromTop <= WindowChromeMetrics.titlebarHeight &&
+            point.x >= WindowChromeMetrics.trafficLightReservedWidth
+    }
+
+    /// Keeps the strip pinned to the top edge as the window resizes: the
+    /// margin opposite the pinned edge flexes.
+    static func autoresizingMask(for contentView: NSView) -> NSView.AutoresizingMask {
+        contentView.isFlipped ? [.width, .maxYMargin] : [.width, .minYMargin]
+    }
 }
 
 struct WindowChromeConfigurator: NSViewRepresentable {
@@ -28,15 +65,25 @@ struct WindowChromeConfigurator: NSViewRepresentable {
 /// outside SwiftUI/WKWebView is important: WebKit otherwise consumes the
 /// mouse-down before AppKit can start a window drag.
 final class WindowDragOverlayView: NSView {
+    override var mouseDownCanMoveWindow: Bool {
+        true
+    }
+
     override func acceptsFirstMouse(for event: NSEvent?) -> Bool {
         true
     }
 
     override func hitTest(_ point: NSPoint) -> NSView? {
+        // The frame already leaves the leading traffic-light region free, so
+        // simply answering for the whole strip never steals those buttons.
         bounds.contains(point) ? self : nil
     }
 
     override func mouseDown(with event: NSEvent) {
+        guard event.clickCount == 1 else {
+            super.mouseDown(with: event)
+            return
+        }
         window?.performDrag(with: event)
     }
 }
@@ -60,6 +107,13 @@ final class WindowChromeView: NSView {
         configureWindow()
     }
 
+    override func layout() {
+        super.layout()
+        if let window {
+            installWindowDragOverlay(in: window)
+        }
+    }
+
     func configureWindow() {
         guard let window else { return }
 
@@ -76,10 +130,13 @@ final class WindowChromeView: NSView {
         if isMainWindow {
             window.styleMask.formUnion([.titled, .closable, .miniaturizable, .resizable])
         }
+        window.styleMask.insert(.titled)
         window.styleMask.insert(.fullSizeContentView)
         window.titleVisibility = .hidden
         window.titlebarAppearsTransparent = true
         window.titlebarSeparatorStyle = .none
+        window.isOpaque = false
+        window.backgroundColor = .clear
         for buttonType: NSWindow.ButtonType in [.closeButton, .miniaturizeButton, .zoomButton] {
             window.standardWindowButton(buttonType)?.isHidden = !isMainWindow
         }
@@ -87,10 +144,11 @@ final class WindowChromeView: NSView {
             window.title = "设置"
             window.standardWindowButton(.closeButton)?.isHidden = false
         }
+        window.isMovable = true
         window.isMovableByWindowBackground = true
 
+        installWindowDragOverlay(in: window)
         if isMainWindow {
-            installWindowDragOverlay(in: window)
             if let closeButton = window.standardWindowButton(.closeButton) {
                 closeButton.target = self
                 closeButton.action = #selector(hideMainWindowFromCloseButton(_:))
@@ -110,17 +168,24 @@ final class WindowChromeView: NSView {
         if overlay.superview !== contentView {
             overlay.removeFromSuperview()
             contentView.addSubview(overlay, positioned: .above, relativeTo: nil)
+        } else if contentView.subviews.last !== overlay {
+            // SwiftUI/WKWebView can insert views after the representable has
+            // been attached. Re-adding keeps the drag strip above the web view.
+            contentView.addSubview(overlay, positioned: .above, relativeTo: nil)
         }
 
-        // NSView coordinates start at the bottom-left. Keep this strip pinned
-        // to the top edge while allowing it to follow window resizing.
-        overlay.autoresizingMask = [.width, .minYMargin]
-        overlay.frame = NSRect(
-            x: WindowChromeMetrics.trafficLightReservedWidth,
-            y: max(0, contentView.bounds.height - WindowChromeMetrics.titlebarHeight),
-            width: max(0, contentView.bounds.width - WindowChromeMetrics.trafficLightReservedWidth),
-            height: min(WindowChromeMetrics.titlebarHeight, contentView.bounds.height)
-        )
+        updateWindowDragOverlayFrame()
+    }
+
+    private func updateWindowDragOverlayFrame() {
+        guard let contentView = window?.contentView,
+              let overlay = windowDragOverlay else { return }
+
+        // Pin the strip to the top edge while letting it follow window
+        // resizing. The window content view is a flipped NSHostingView in the
+        // real app, so the top edge is y = 0 there.
+        overlay.autoresizingMask = WindowDragStrip.autoresizingMask(for: contentView)
+        overlay.frame = WindowDragStrip.frame(in: contentView)
     }
 }
 
@@ -216,12 +281,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, Obse
         super.init()
     }
 
-    deinit {
-        if let windowDragEventMonitor {
-            NSEvent.removeMonitor(windowDragEventMonitor)
-        }
-    }
-
     func applicationDidFinishLaunching(_ notification: Notification) {
         configureStatusItem()
         applyDockIconPolicy()
@@ -242,9 +301,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, Obse
         mainWindow.delegate = self
     }
 
-    /// Hide the main window instead of closing it. SwiftUI cannot reliably
-    /// recreate a destroyed WindowGroup window later, so the Dock click needs
-    /// the same window object to remain alive and simply be shown again.
+    /// Hide the main window instead of closing it. Keeping the singleton Window
+    /// alive lets Dock and status-item clicks reveal the same window object.
     func windowShouldClose(_ sender: NSWindow) -> Bool {
         guard sender === mainWindow else { return true }
         sender.orderOut(nil)
@@ -275,6 +333,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, Obse
         terminatingForUpdate = false
     }
 
+    deinit {
+        if let windowDragEventMonitor {
+            NSEvent.removeMonitor(windowDragEventMonitor)
+        }
+    }
+
     private func installWindowDragEventMonitor() {
         guard windowDragEventMonitor == nil else { return }
 
@@ -283,18 +347,21 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, Obse
         ) { [weak self] event in
             guard let self,
                   let window = event.window,
-                  window === self.mainWindow,
-                  window.styleMask.contains(.titled),
-                  window.isMovable else {
+                  self.isWindowDragStart(event, in: window) else {
                 return event
             }
 
-            guard let contentView = window.contentView else { return event }
-            let point = contentView.convert(event.locationInWindow, from: nil)
-            let distanceFromTop = contentView.bounds.maxY - point.y
-            guard distanceFromTop >= 0,
-                  distanceFromTop <= WindowChromeMetrics.titlebarHeight,
-                  point.x >= WindowChromeMetrics.trafficLightReservedWidth else {
+            if event.clickCount == 2 {
+                window.zoom(nil)
+                return nil
+            }
+
+            // Prefer the overlay's native drag path when it is the topmost
+            // subview: `mouseDownCanMoveWindow` lets AppKit own the gesture.
+            // Fall back to performDrag only when a WebKit/SwiftUI view sits
+            // above the strip and would otherwise swallow the click.
+            if let contentView = window.contentView,
+               contentView.subviews.last is WindowDragOverlayView {
                 return event
             }
 
@@ -303,12 +370,34 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, Obse
         }
     }
 
+    private func isWindowDragStart(_ event: NSEvent, in window: NSWindow) -> Bool {
+        guard window.isMovable,
+              let contentView = window.contentView else {
+            return false
+        }
+
+        let point = contentView.convert(event.locationInWindow, from: nil)
+        return WindowDragStrip.contains(point: point, in: contentView)
+    }
+
     func setShowsDockIcon(_ visible: Bool) {
         guard showsDockIcon != visible else { return }
+        let windowToRestore = NSApp.keyWindow ?? mainWindow
         showsDockIcon = visible
         UserDefaults.standard.set(visible, forKey: Self.dockIconPreferenceKey)
         applyDockIconPolicy()
         updateStatusMenuState()
+
+        // Changing from `.regular` to `.accessory` can deactivate the app and
+        // hide its current window. Re-activate on the next run-loop turn so
+        // switching this preference never strands the UI behind other apps.
+        if !visible {
+            DispatchQueue.main.async { [weak self] in
+                guard let self else { return }
+                self.activateApplication()
+                self.restoreWindowAfterActivationPolicyChange(preferred: windowToRestore)
+            }
+        }
     }
 
     func openMainWindow(forceReload: Bool = true) {
@@ -320,8 +409,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, Obse
         }
 
         let shouldReload = forceReload || !window.isVisible
-        window.makeKeyAndOrderFront(nil)
-        NSApp.activate(ignoringOtherApps: true)
+        activateAndBringWindowToFront(window)
         webViewController?.restore(
             url: harnessManager?.serverURL,
             forceReload: shouldReload
@@ -433,9 +521,45 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, Obse
         let policy: NSApplication.ActivationPolicy = showsDockIcon ? .regular : .accessory
         guard NSApp.activationPolicy() != policy else { return }
         _ = NSApp.setActivationPolicy(policy)
-        if showsDockIcon {
-            NSApp.activate(ignoringOtherApps: true)
+        activateApplication()
+    }
+
+    private func activateApplication() {
+        NSApp.unhide(nil)
+        NSApp.activate(ignoringOtherApps: true)
+    }
+
+    /// Brings the main window forward and makes the app the active app.
+    ///
+    /// Ordering matters in `.accessory` (Dock icon hidden) mode: AppKit can
+    /// ignore `NSApp.activate` for a menu-bar app unless the window is already
+    /// visible. Show and order the window first, then activate the running
+    /// app with the same options Dock clicks use, then make the window key.
+    private func activateAndBringWindowToFront(_ window: NSWindow) {
+        if window.isMiniaturized {
+            window.deminiaturize(nil)
         }
+        window.orderFrontRegardless()
+
+        NSApp.unhide(nil)
+        NSApp.activate(ignoringOtherApps: true)
+
+        if NSApp.activationPolicy() == .accessory {
+            NSRunningApplication.current.activate(
+                options: [.activateAllWindows, .activateIgnoringOtherApps]
+            )
+        }
+
+        window.makeKeyAndOrderFront(nil)
+        window.orderFrontRegardless()
+    }
+
+    private func restoreWindowAfterActivationPolicyChange(preferred: NSWindow?) {
+        let window = [preferred, mainWindow]
+            .compactMap { $0 }
+            .first { NSApp.windows.contains($0) }
+        guard let window else { return }
+        activateAndBringWindowToFront(window)
     }
 
     private func updateStatusMenuState() {

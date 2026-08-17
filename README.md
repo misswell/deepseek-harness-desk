@@ -1,23 +1,24 @@
 # DeepSeek Harness Desk
 
-DeepSeek Harness Desk 当前正式版是基于 **Tauri v2** 构建的跨平台桌面客户端，不是 SwiftUI 原生应用。当前版本为 **0.3.8**，支持 macOS、Windows 和 Linux。
+DeepSeek Harness Desk 当前正式版是基于 **Tauri v2** 构建的跨平台桌面客户端，不是 SwiftUI 原生应用。当前版本为 **0.3.11**，支持 macOS、Windows 和 Linux。
 
 ## 下载
 
-请从 [GitHub Releases](https://github.com/misswell/deepseek-harness-desk/releases/latest) 下载对应平台的最新安装包。macOS 通用包支持 Apple Silicon 和 Intel Mac，并使用 Developer ID Application 证书签名、完成 Apple 公证。
+请从 [GitHub Releases](https://github.com/misswell/deepseek-harness-desk/releases/latest) 下载对应平台的最新安装包。macOS 分别提供 Apple Silicon 和 Intel 安装包，使用 Developer ID Application 证书签名并完成 Apple 公证。
 
 ## 当前源码
 
-当前 Tauri v2 实现位于 [`codex/release-v0.3.8` 分支的 `tauri-app`](https://github.com/misswell/deepseek-harness-desk/tree/codex/release-v0.3.8/tauri-app)，技术栈为 Rust、WebView 和 Tauri。它提供 Harness 启停与重启、端口选择、健康检查、日志、单窗口、系统托盘、Dock 图标控制、快捷键缩放以及跨平台窗口控制。
+当前 Tauri v2 实现位于 [`tauri-app`](tauri-app)，技术栈为 Rust、WebView 和 Tauri。它提供 Harness 启停与重启、端口选择、健康检查、日志、单窗口、系统托盘、Dock 图标控制、快捷键缩放以及跨平台窗口控制。
 
 ```bash
-git switch codex/release-v0.3.8
 cd tauri-app
 npm install
 npm run tauri dev
 ```
 
 测试构建使用 `npm run build:debug`，发布构建使用 `npm run build`；构建前会自动清理旧的本地测试包。
+
+主窗口支持快捷键缩放：macOS 使用 `⌘ +` / `⌘ -` / `⌘ 0`，Windows 和 Linux 使用 `Ctrl +` / `Ctrl -` / `Ctrl 0`，缩放范围为 75%–175%，设置会自动保存。
 
 ## 旧版 SwiftUI 工程
 
