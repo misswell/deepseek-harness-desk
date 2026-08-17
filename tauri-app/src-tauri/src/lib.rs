@@ -26,6 +26,69 @@ const RELEASES_URL: &str =
     "https://api.github.com/repos/misswell/deepseek-harness-desk/releases/latest";
 const NPM_METADATA_URL: &str = "https://registry.npmjs.org/@deepseek-ai%2fdsh";
 
+fn macos_proxy_url_from_scutil(output: &str, scheme: &str) -> Option<String> {
+    let prefix = if scheme.eq_ignore_ascii_case("https") {
+        "HTTPS"
+    } else {
+        "HTTP"
+    };
+    let value = |key: &str| {
+        output.lines().find_map(|line| {
+            let (candidate, value) = line.trim().split_once(" : ")?;
+            (candidate == key).then(|| value.trim())
+        })
+    };
+
+    if value(&format!("{prefix}Enable"))? != "1" {
+        return None;
+    }
+    let host = value(&format!("{prefix}Proxy"))?;
+    let port = value(&format!("{prefix}Port"))?.parse::<u16>().ok()?;
+    let host = if host.contains(':') && !host.starts_with('[') {
+        format!("[{host}]")
+    } else {
+        host.to_string()
+    };
+    Some(format!("http://{host}:{port}"))
+}
+
+#[cfg(target_os = "macos")]
+fn macos_system_proxy_output() -> Option<String> {
+    let output = Command::new("/usr/sbin/scutil")
+        .arg("--proxy")
+        .output()
+        .ok()?;
+    output
+        .status
+        .success()
+        .then(|| String::from_utf8_lossy(&output.stdout).into_owned())
+}
+
+fn outbound_http_client(
+    timeout: Duration,
+    user_agent: &str,
+    http1_only: bool,
+) -> Result<reqwest::Client, reqwest::Error> {
+    let mut builder = reqwest::Client::builder()
+        .timeout(timeout)
+        .user_agent(user_agent);
+    if http1_only {
+        builder = builder.http1_only();
+    }
+
+    #[cfg(target_os = "macos")]
+    if let Some(settings) = macos_system_proxy_output() {
+        if let Some(proxy_url) = macos_proxy_url_from_scutil(&settings, "http") {
+            builder = builder.proxy(reqwest::Proxy::http(proxy_url)?);
+        }
+        if let Some(proxy_url) = macos_proxy_url_from_scutil(&settings, "https") {
+            builder = builder.proxy(reqwest::Proxy::https(proxy_url)?);
+        }
+    }
+
+    builder.build()
+}
+
 #[derive(Clone)]
 struct HarnessState {
     lifecycle: Arc<Mutex<()>>,
@@ -660,11 +723,7 @@ async fn download_runtime_archive_once(
     url: &str,
     destination: &Path,
 ) -> Result<(), String> {
-    let client = reqwest::Client::builder()
-        .timeout(Duration::from_secs(300))
-        .http1_only()
-        .user_agent("DeepSeek Harness Desk")
-        .build()
+    let client = outbound_http_client(Duration::from_secs(300), "DeepSeek Harness Desk", true)
         .map_err(|error| format!("创建运行时下载客户端失败：{error}"))?;
     let response = client
         .get(url)
@@ -1037,16 +1096,15 @@ fn is_retryable_download_error(error: &str) -> bool {
         "connection reset",
         "connection closed",
         "timed out",
+        "error sending request",
     ]
     .iter()
     .any(|fragment| error.to_ascii_lowercase().contains(fragment))
 }
 
 async fn fetch_latest_release() -> Result<GithubRelease, String> {
-    let client = reqwest::Client::builder()
-        .timeout(Duration::from_secs(20))
-        .user_agent(format!("DeepSeek Harness Desk/{APP_VERSION}"))
-        .build()
+    let user_agent = format!("DeepSeek Harness Desk/{APP_VERSION}");
+    let client = outbound_http_client(Duration::from_secs(20), &user_agent, false)
         .map_err(|error| format!("创建更新检查客户端失败：{error}"))?;
     let response = client
         .get(RELEASES_URL)
@@ -1161,11 +1219,8 @@ async fn download_update_asset_once(
     destination: &Path,
 ) -> Result<(), String> {
     emit_update_progress(app, "正在下载 App 更新…", Some(0.05), false, None);
-    let client = reqwest::Client::builder()
-        .timeout(Duration::from_secs(300))
-        .http1_only()
-        .user_agent(format!("DeepSeek Harness Desk/{APP_VERSION}"))
-        .build()
+    let user_agent = format!("DeepSeek Harness Desk/{APP_VERSION}");
+    let client = outbound_http_client(Duration::from_secs(300), &user_agent, true)
         .map_err(|error| format!("创建 App 下载客户端失败：{error}"))?;
     let response = client
         .get(&asset.browser_download_url)
@@ -1453,10 +1508,8 @@ async fn check_dsh_update_inner(app: &AppHandle) -> Result<DshUpdateStatus, Stri
             status: "尚未安装内置 dsh，完成一键安装后可检查更新。".to_string(),
         });
     }
-    let client = reqwest::Client::builder()
-        .timeout(Duration::from_secs(20))
-        .user_agent(format!("DeepSeek Harness Desk/{APP_VERSION}"))
-        .build()
+    let user_agent = format!("DeepSeek Harness Desk/{APP_VERSION}");
+    let client = outbound_http_client(Duration::from_secs(20), &user_agent, false)
         .map_err(|error| format!("创建 dsh 更新检查客户端失败：{error}"))?;
     let response = client
         .get(NPM_METADATA_URL)
@@ -2327,5 +2380,31 @@ mod tests {
         assert!(is_safe_package_version("0.1.0-rc.7"));
         assert!(!is_safe_package_version("../../tmp"));
         assert!(!is_safe_package_version("0.1.0 rc.7"));
+    }
+
+    #[test]
+    fn macos_system_https_proxy_matches_browser_proxy() {
+        let output = r#"
+<dictionary> {
+  HTTPEnable : 1
+  HTTPPort : 7890
+  HTTPProxy : 127.0.0.1
+  HTTPSEnable : 1
+  HTTPSPort : 7890
+  HTTPSProxy : 127.0.0.1
+}
+"#;
+
+        assert_eq!(
+            macos_proxy_url_from_scutil(output, "https").as_deref(),
+            Some("http://127.0.0.1:7890")
+        );
+    }
+
+    #[test]
+    fn request_send_failures_are_retryable() {
+        assert!(is_retryable_download_error(
+            "error sending request for url (https://github.com/example)"
+        ));
     }
 }
