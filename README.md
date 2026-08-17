@@ -1,48 +1,26 @@
 # DeepSeek Harness Desk
 
-原生 SwiftUI macOS 桌面客户端，用于启动并承载官方 DeepSeek Harness Web UI。
+DeepSeek Harness Desk 当前正式版是基于 **Tauri v2** 构建的跨平台桌面客户端，不是 SwiftUI 原生应用。当前版本为 **0.3.8**，支持 macOS、Windows 和 Linux。
 
-当前版本：0.2.26
+## 下载
 
-## 下载与安装
+请从 [GitHub Releases](https://github.com/misswell/deepseek-harness-desk/releases/latest) 下载对应平台的最新安装包。macOS 通用包支持 Apple Silicon 和 Intel Mac，并使用 Developer ID Application 证书签名、完成 Apple 公证。
 
-从 [GitHub Releases](https://github.com/misswell/deepseek-harness-desk/releases/latest) 下载最新的 `DeepSeekHarnessDesk-*-macOS-universal.zip`，解压后将 App 拖入“应用程序”目录即可。公开发布包使用 Developer ID Application 证书签名，并已完成 Apple 公证。
+## 当前源码
 
-系统要求：macOS 14 或更高版本，支持 Apple Silicon 和 Intel Mac。
-
-## 功能
-
-- 无需预装 Node.js 或 `dsh`：首次启动时可一键下载并安装受校验的 Managed Node.js 与 DeepSeek Harness Runtime
-- 自动选择 `3080–3099` 的本地端口
-- 等待 HTTP 健康检查通过后加载 `WKWebView`
-- 支持启动、停止、重启和有限次数的崩溃恢复
-- 捕获 Harness stdout/stderr，并写入 `~/Library/Logs/DeepSeek Harness Desk/`
-- 退出 App 时清理 Harness 进程树
-- 使用 DeepSeek Harness 原版蓝色鲸鱼 Logo
-- 主窗口内容延伸到最上边缘，保留 macOS 原生红黄绿窗口控制点；窗口仍可拖动、调整大小，使用 `⌘W` 关闭
-- 支持 `⌘+`、`⌘-` 和 `⌘0` 缩放界面，范围为 50%–200%，比例会持久化保存
-- 关闭主窗口后应用继续驻留 Dock，再次点击 Dock 图标会恢复窗口并重新加载 Harness 页面
-- 菜单栏常驻图标支持单击打开主窗口；设置中可关闭 Dock 图标，关闭后通过菜单栏图标继续使用
-- 强制退出后再次打开会自动清理上次遗留的 Harness 进程和端口，不会一直停留在“正在启动”
-- 更新下载具备超时、完整性、版本和签名校验；替换失败会自动回滚，不会留下损坏的 App
-- 更新检查支持每小时、每天或每周静默检查；App 和内置 Runtime 的下载过程显示阶段、进度和实时日志
-- 启动后分别检查 App 壳子和内置 `dsh`，发现新版本后默认自动安装；App 壳子会替换并重启，`dsh` 会重启 Harness 使新版本立即生效
-
-如果系统中已经安装 `dsh`，App 会优先使用它；否则在启动失败页点击“一键安装运行时”即可完成安装。Managed Runtime 安装在 `~/Library/Application Support/DeepSeek Harness Desk/runtime`，不会修改用户的 Shell 配置。
-
-更新包发布在本仓库的 GitHub Releases。设置菜单的“更新”页分别管理 App 壳子与内置 `dsh`：可以独立查看当前/最新版本、手动检查，并分别关闭自动检查或自动安装。公开发布包必须使用 Developer ID Application 证书签名并完成 Apple 公证；开发构建仍可使用 Apple Development 证书。安装更新前请将 App 放在可写位置（例如“应用程序”目录）。
-
-## 开发
-
-使用 Xcode 打开 `DeepSeekHarnessDesk.xcodeproj`，选择 `DeepSeekHarnessDesk` Scheme 后即可构建运行。项目使用 Swift、SwiftUI、AppKit、WebKit 和 `Foundation.Process`，不 Fork 或修改 DeepSeek Harness 源码。
+当前 Tauri v2 实现位于 [`codex/release-v0.3.8` 分支的 `tauri-app`](https://github.com/misswell/deepseek-harness-desk/tree/codex/release-v0.3.8/tauri-app)，技术栈为 Rust、WebView 和 Tauri。它提供 Harness 启停与重启、端口选择、健康检查、日志、单窗口、系统托盘、Dock 图标控制、快捷键缩放以及跨平台窗口控制。
 
 ```bash
-xcodebuild -project DeepSeekHarnessDesk.xcodeproj \
-  -scheme DeepSeekHarnessDesk \
-  -configuration Debug \
-  build
+git switch codex/release-v0.3.8
+cd tauri-app
+npm install
+npm run tauri dev
 ```
 
-## 项目说明
+测试构建使用 `npm run build:debug`，发布构建使用 `npm run build`；构建前会自动清理旧的本地测试包。
+
+## 旧版 SwiftUI 工程
+
+默认分支根目录中的 `DeepSeekHarnessDesk.xcodeproj` 是迁移前的 SwiftUI/AppKit macOS 工程，仅用于兼容旧版本和代码参考，不再是当前正式发布实现。
 
 DeepSeek Harness 由 DeepSeek AI 开发。DeepSeek Harness Desk 是独立的第三方项目，不隶属于 DeepSeek AI，也未获得其认可或赞助。
