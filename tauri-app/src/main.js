@@ -100,6 +100,7 @@ const state = {
   settingsTab: localStorage.getItem("settingsTab") || "general",
   automaticUpdateTimer: null,
   updateChecking: false,
+  busyOperation: null,
   zoom: DEFAULT_ZOOM,
 };
 
@@ -215,7 +216,15 @@ function renderUpdateProgress({ title, message, fraction, done = false, error = 
 
 function setBusy(busy) {
   state.busy = busy;
+  if (!busy) state.busyOperation = null;
   const running = state.status?.running === true;
+  const busyLabel = state.busyOperation === "dsh-update"
+    ? "更新中…"
+    : state.busyOperation === "runtime-install"
+      ? "安装中…"
+      : state.busyOperation === "stop"
+        ? "停止中…"
+        : "启动中…";
   elements.startButton.disabled = busy || running;
   elements.retryButton.disabled = busy || running;
   elements.runtimeInstallButton.disabled = busy || state.runtime?.installing === true;
@@ -225,11 +234,18 @@ function setBusy(busy) {
   elements.checkAppUpdateButton.disabled = busy;
   elements.checkDshUpdateButton.disabled = busy || state.runtime?.available !== true;
   elements.installDshUpdateButton.disabled = busy;
-  elements.startButton.textContent = busy ? "启动中…" : running ? "已启动" : "启动 Harness";
-  elements.retryButton.textContent = busy ? "启动中…" : "重新启动";
+  elements.startButton.textContent = busy ? busyLabel : running ? "已启动" : "启动 Harness";
+  elements.retryButton.textContent = busy ? busyLabel : "重新启动";
 }
 
 function phaseCopy() {
+  if (state.busyOperation === "dsh-update") {
+    return {
+      label: "更新中",
+      title: "正在更新内置 dsh…",
+      message: "更新期间会暂时停止 Harness，完成后自动恢复。",
+    };
+  }
   if (state.phase === "starting") {
     return {
       label: "启动中",
@@ -321,25 +337,38 @@ function renderStatus() {
   const copy = phaseCopy();
   const running = state.phase === "running" && state.status?.running === true;
   const failed = state.phase === "error";
+  const updatingDsh = state.busyOperation === "dsh-update";
 
   elements.startupView.classList.toggle("hidden", running || failed);
   elements.errorView.classList.toggle("hidden", !failed);
-  elements.startupSpinner.classList.toggle("hidden", state.phase !== "starting");
+  elements.startupSpinner.classList.toggle("hidden", state.phase !== "starting" && !updatingDsh);
   elements.startupTitle.textContent = copy.title;
-  if (state.phase !== "starting" || !state.runtime?.installing) {
+  if (updatingDsh) {
+    elements.startupMessage.textContent = copy.message;
+  } else if (state.phase !== "starting" || !state.runtime?.installing) {
     elements.startupMessage.textContent = copy.message;
   }
-  elements.harnessStatus.textContent = running ? "运行中" : state.phase === "error" ? "启动失败" : state.phase === "starting" ? "启动中…" : "已停止";
+  elements.harnessStatus.textContent = updatingDsh
+    ? "更新中…"
+    : running
+      ? "运行中"
+      : state.phase === "error"
+        ? "启动失败"
+        : state.phase === "starting"
+          ? "启动中…"
+          : "已停止";
   elements.harnessStatus.classList.toggle("available", running);
   elements.harnessStatus.classList.toggle("missing", failed);
   elements.portStatus.textContent = state.status?.port ? String(state.status.port) : "—";
-  elements.settingsHarnessStatus.textContent = running
-    ? "运行中"
-    : failed
-      ? "启动失败"
-      : state.phase === "starting"
-        ? "启动中…"
-        : "已停止";
+  elements.settingsHarnessStatus.textContent = updatingDsh
+    ? "更新中…"
+    : running
+      ? "运行中"
+      : failed
+        ? "启动失败"
+        : state.phase === "starting"
+          ? "启动中…"
+          : "已停止";
   elements.settingsHarnessPid.textContent = state.status?.pid ? String(state.status.pid) : "—";
   elements.settingsHarnessPort.textContent = state.status?.port ? String(state.status.port) : "—";
   elements.settingsHarnessPath.textContent = state.status?.dsh_path || "—";
@@ -494,6 +523,7 @@ async function installDshUpdate(automatically = false) {
   if (state.busy || !version) return;
   if (!automatically) showUpdatesPanel();
   state.updateKind = "dsh";
+  state.busyOperation = "dsh-update";
   renderUpdateProgress({
     title: "正在更新内置 dsh…",
     message: `准备安装 ${version}…`,
@@ -509,7 +539,6 @@ async function installDshUpdate(automatically = false) {
       available: false,
       status: `内置 dsh 更新完成：${state.runtime.version || version}`,
     };
-    await refreshStatus();
     setToast(automatically ? `内置 dsh 已自动更新到 ${version}` : `内置 dsh 已更新到 ${version}`);
   } catch (error) {
     const message = errorMessage(error);
@@ -522,6 +551,8 @@ async function installDshUpdate(automatically = false) {
     setToast(message, true);
   } finally {
     state.busy = false;
+    state.busyOperation = null;
+    await refreshStatus();
     await loadLogs();
     renderRuntime();
     renderDshUpdate();
@@ -578,6 +609,7 @@ async function loadLogs() {
 async function startHarness() {
   if (state.busy || state.status?.running) return;
   state.phase = "starting";
+  state.busyOperation = "start";
   state.status = { running: false };
   state.busy = true;
   renderStatus();
@@ -605,6 +637,7 @@ async function startHarness() {
 async function restartHarness() {
   if (state.busy) return;
   state.phase = "starting";
+  state.busyOperation = "start";
   state.busy = true;
   renderStatus();
   try {
@@ -626,6 +659,7 @@ async function restartHarness() {
 async function stopHarness() {
   if (state.busy || !state.status?.running) return;
   state.busy = true;
+  state.busyOperation = "stop";
   try {
     state.status = await call("stop_harness");
     state.phase = "idle";
@@ -644,6 +678,7 @@ async function stopHarness() {
 async function installRuntime() {
   if (state.busy) return;
   state.busy = true;
+  state.busyOperation = "runtime-install";
   if (state.runtime) state.runtime.installing = true;
   renderRuntime();
   try {

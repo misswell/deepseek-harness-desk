@@ -75,7 +75,7 @@ jobs:
       - name: Install frontend dependencies
         run: npm ci --prefix tauri-app
 
-      - name: Clean old test package outputs
+      - name: Move old test package outputs to trash
         run: node scripts/clean_test_packages.mjs
 
       - name: Build macOS ${{ matrix.arch }} package
@@ -120,7 +120,7 @@ jobs:
       - name: Install frontend dependencies
         run: npm ci --prefix tauri-app
 
-      - name: Clean old test package outputs
+      - name: Move old test package outputs to trash
         run: node scripts/clean_test_packages.mjs
 
       - name: Build Windows package
@@ -167,7 +167,7 @@ jobs:
       - name: Install frontend dependencies
         run: npm ci --prefix tauri-app
 
-      - name: Clean old test package outputs
+      - name: Move old test package outputs to trash
         run: node scripts/clean_test_packages.mjs
 
       - name: Build Linux package

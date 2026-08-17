@@ -12,7 +12,7 @@ npm install
 npm run tauri dev
 ```
 
-需要 Node.js 18+、Rust 和 Cargo。测试构建使用 `npm run build:debug`，发布构建使用 `npm run build`；每次构建前会自动清理旧的本地测试包，再生成 macOS、Windows 和 Linux 对应的安装包/可执行产物。当前 Tauri 版优先使用系统 `dsh`，也会兼容旧版 managed dsh；找不到时点击“安装并启动”会自动下载隔离的 Node.js 和 Harness 运行时，也可通过 `DSH_BIN` 指定已有路径。
+需要 Node.js 18+、Rust 和 Cargo。测试构建使用 `npm run build:debug`，发布构建使用 `npm run build`；每次构建前会自动把历史本地测试包移入系统废纸篓，再生成 macOS、Windows 和 Linux 对应的安装包/可执行产物，因此构建完成后只保留最新输出。当前 Tauri 版优先使用系统 `dsh`，也会兼容旧版 managed dsh；找不到时点击“安装并启动”会自动下载隔离的 Node.js 和 Harness 运行时，也可通过 `DSH_BIN` 指定已有路径。
 
 Tauri 版功能包括：启动、停止、重启 Harness；自动选择 `3080–3099` 端口；异步 HTTP 健康检查；stdout/stderr 日志；固定单窗口；透明自定义顶栏；菜单栏/系统托盘唤醒；Dock 图标开关；macOS、Windows、Linux 窗口控制。
 

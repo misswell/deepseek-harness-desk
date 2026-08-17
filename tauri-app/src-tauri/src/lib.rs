@@ -541,6 +541,116 @@ fn dsh_command(app: &AppHandle) -> Option<DshCommand> {
         .map(|program| DshCommand { program })
 }
 
+fn is_managed_harness_command(
+    command: &str,
+    executable_path: &Path,
+    port_start: u16,
+    port_end: u16,
+) -> bool {
+    let marker = format!("{} web --port ", executable_path.to_string_lossy());
+    let Some(marker_start) = command.find(&marker) else {
+        return false;
+    };
+    if marker_start > 0
+        && command[..marker_start]
+            .chars()
+            .last()
+            .is_some_and(|character| !character.is_whitespace())
+    {
+        return false;
+    }
+
+    let arguments = &command[marker_start + marker.len()..];
+    let Some(port_text) = arguments.split_whitespace().next() else {
+        return false;
+    };
+    let Ok(port) = port_text.parse::<u16>() else {
+        return false;
+    };
+    (port_start..=port_end).contains(&port) && arguments[port_text.len()..].trim().is_empty()
+}
+
+fn orphaned_managed_harness_process_ids(app: &AppHandle) -> Vec<u32> {
+    let executable_paths = managed_dsh_version_paths(Some(app))
+        .into_iter()
+        .map(|(_, path)| dsh_executable(&path))
+        .collect::<Vec<_>>();
+    if executable_paths.is_empty() {
+        return Vec::new();
+    }
+
+    let Ok(output) = Command::new("/bin/ps")
+        .args(["-axo", "pid=,ppid=,command="])
+        .output()
+    else {
+        return Vec::new();
+    };
+
+    String::from_utf8_lossy(&output.stdout)
+        .lines()
+        .filter_map(|line| {
+            let fields = line.trim_start();
+            let pid_text = fields.split_whitespace().next()?;
+            let after_pid = fields.strip_prefix(pid_text)?.trim_start();
+            let parent_pid_text = after_pid.split_whitespace().next()?;
+            let command = after_pid.strip_prefix(parent_pid_text)?.trim_start();
+            let pid = pid_text.parse::<u32>().ok()?;
+            let parent_pid = parent_pid_text.parse::<u32>().ok()?;
+
+            // A process still owned by the current App or a manually launched
+            // dsh is not an orphan. PPID 1 identifies leftovers from a
+            // previous App instance after macOS has re-parented them.
+            if parent_pid != 1 {
+                return None;
+            }
+            executable_paths
+                .iter()
+                .any(|path| is_managed_harness_command(command, path, PORT_START, PORT_END))
+                .then_some(pid)
+        })
+        .collect()
+}
+
+fn process_is_alive(pid: u32) -> bool {
+    Command::new("/bin/kill")
+        .args(["-0", &pid.to_string()])
+        .status()
+        .map(|status| status.success())
+        .unwrap_or(false)
+}
+
+fn terminate_orphaned_harness_process(pid: u32) {
+    let pid_text = pid.to_string();
+    let process_group = format!("-{pid}");
+    let _ = Command::new("/bin/kill")
+        .args(["-TERM", &process_group])
+        .status();
+    let _ = Command::new("/bin/kill")
+        .args(["-TERM", &pid_text])
+        .status();
+
+    let deadline = Instant::now() + Duration::from_secs(2);
+    while process_is_alive(pid) && Instant::now() < deadline {
+        std::thread::sleep(Duration::from_millis(100));
+    }
+    if process_is_alive(pid) {
+        let _ = Command::new("/bin/kill")
+            .args(["-KILL", &process_group])
+            .status();
+        let _ = Command::new("/bin/kill")
+            .args(["-KILL", &pid_text])
+            .status();
+    }
+}
+
+fn reap_orphaned_managed_harnesses(app: &AppHandle) -> Vec<u32> {
+    let process_ids = orphaned_managed_harness_process_ids(app);
+    for pid in &process_ids {
+        terminate_orphaned_harness_process(*pid);
+    }
+    process_ids
+}
+
 fn process_path(program: &Path, app: &AppHandle) -> String {
     let mut paths = Vec::new();
     if let Some(parent) = program.parent() {
@@ -878,6 +988,12 @@ fn install_dsh_package(
         return Err("Node.js 安装完成，但没有找到 npm。".to_string());
     }
 
+    // Keep the bundled runtime independent from the user's global npm cache.
+    // A stale or root-owned ~/.npm cache can make an otherwise valid install
+    // fail with EACCES/EEXIST while npm is renaming cache entries.
+    let npm_cache = preferred_runtime_root(app).join("npm-cache");
+    fs::create_dir_all(&npm_cache).map_err(|error| format!("创建 npm 缓存目录失败：{error}"))?;
+
     let args = vec![
         "install".to_string(),
         "--prefix".to_string(),
@@ -900,6 +1016,8 @@ fn install_dsh_package(
     let output = command
         .current_dir(dsh_staging)
         .env("PATH", runtime_node_path(node_root))
+        .env("npm_config_cache", &npm_cache)
+        .env("NPM_CONFIG_CACHE", &npm_cache)
         .output()
         .map_err(|error| format!("执行 npm 安装失败：{error}"))?;
 
@@ -1836,6 +1954,23 @@ async fn start_harness_inner(
         return Err(message.to_string());
     };
 
+    let reaped_processes = reap_orphaned_managed_harnesses(app);
+    if !reaped_processes.is_empty() {
+        emit_log(
+            app,
+            &state.logs,
+            "desk",
+            format!(
+                "已清理上次遗留的 Harness 进程：{}",
+                reaped_processes
+                    .iter()
+                    .map(u32::to_string)
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            ),
+        );
+    }
+
     let Some(port) = first_available_port(PORT_START, PORT_END) else {
         let message = "3080–3099 端口均不可用，请释放端口后重试。";
         set_last_error(state, Some(message.to_string()));
@@ -2397,6 +2532,31 @@ mod tests {
     fn dsh_candidates_include_path_entries() {
         let candidates = dsh_candidates(None);
         assert!(!candidates.is_empty());
+    }
+
+    #[test]
+    fn managed_harness_command_requires_exact_path_and_port() {
+        let executable = Path::new(
+            "/Users/example/Library/Application Support/DeepSeek Harness Desk/runtime/dsh/0.1.0-rc.7/node_modules/.bin/dsh",
+        );
+        assert!(is_managed_harness_command(
+            "node /Users/example/Library/Application Support/DeepSeek Harness Desk/runtime/dsh/0.1.0-rc.7/node_modules/.bin/dsh web --port 3080",
+            executable,
+            PORT_START,
+            PORT_END
+        ));
+        assert!(!is_managed_harness_command(
+            "node /Users/example/Library/Application Support/DeepSeek Harness Desk/runtime/dsh/0.1.0-rc.7/node_modules/.bin/dsh web --port 3100",
+            executable,
+            PORT_START,
+            PORT_END
+        ));
+        assert!(!is_managed_harness_command(
+            "node /tmp/dsh web --port 3080",
+            executable,
+            PORT_START,
+            PORT_END
+        ));
     }
 
     #[test]
