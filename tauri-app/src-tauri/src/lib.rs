@@ -11,7 +11,7 @@ use std::sync::atomic::{AtomicBool, AtomicU16, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
-use tauri::menu::{MenuBuilder, MenuItem, SubmenuBuilder};
+use tauri::menu::{MenuBuilder, MenuItem, MenuItemKind, SubmenuBuilder};
 use tauri::tray::{MouseButton, TrayIconBuilder, TrayIconEvent};
 use tauri::{AppHandle, Emitter, Manager, RunEvent, State, WebviewWindow, WindowEvent};
 
@@ -2348,10 +2348,33 @@ fn setup_app_menu<R: tauri::Runtime>(app: &mut tauri::App<R>) -> tauri::Result<(
     let zoom_out = MenuItem::with_id(app, "zoom-out", "缩小", true, Some("CmdOrCtrl+-"))?;
     let zoom_reset =
         MenuItem::with_id(app, "zoom-reset", "恢复默认大小", true, Some("CmdOrCtrl+0"))?;
-    let view = SubmenuBuilder::new(app, "查看")
-        .items(&[&zoom_in, &zoom_out, &zoom_reset])
-        .build()?;
-    let menu = MenuBuilder::new(app).item(&view).build()?;
+
+    // Keep the standard macOS menu (App/File/Edit/View/Window/Help). The Edit
+    // submenu is what routes Cmd+C / Cmd+V / Cmd+X keyboard shortcuts to the
+    // WebView; replacing the whole menu bar with only the zoom submenu removed
+    // it and broke copy/paste/cut shortcuts (right-click paste still worked
+    // because it is handled by the WebView itself).
+    let menu = tauri::menu::Menu::default(app.handle())?;
+
+    // Add the zoom items to the existing "View" submenu on macOS, or append a
+    // dedicated "查看" submenu on platforms that have no default View menu.
+    let mut appended = false;
+    for item in menu.items()? {
+        if let MenuItemKind::Submenu(submenu) = item {
+            if submenu.text()? == "View" {
+                submenu.append_items(&[&zoom_in, &zoom_out, &zoom_reset])?;
+                appended = true;
+                break;
+            }
+        }
+    }
+    if !appended {
+        let view = SubmenuBuilder::new(app, "查看")
+            .items(&[&zoom_in, &zoom_out, &zoom_reset])
+            .build()?;
+        menu.append(&view)?;
+    }
+
     app.set_menu(menu)?;
     Ok(())
 }
