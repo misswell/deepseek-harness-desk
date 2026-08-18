@@ -49,6 +49,7 @@ const elements = {
   appUpdateStatus: document.querySelector("#app-update-status"),
   checkAppUpdateButton: document.querySelector("#check-app-update-button"),
   installAppUpdateButton: document.querySelector("#install-app-update-button"),
+  openReleasesPageButton: document.querySelector("#open-releases-page-button"),
   openReleasePageButton: document.querySelector("#open-release-page-button"),
   autoCheckAppToggle: document.querySelector("#auto-check-app-toggle"),
   autoCheckInterval: document.querySelector("#auto-check-interval"),
@@ -783,6 +784,9 @@ function bindEvents() {
   elements.openReleasePageButton.addEventListener("click", async () => {
     if (!state.appUpdate?.release_url) return;
     await call("open_release_page", { url: state.appUpdate.release_url }).catch((error) => setToast(errorMessage(error), true));
+  });
+  elements.openReleasesPageButton.addEventListener("click", async () => {
+    await call("open_releases_page").catch((error) => setToast(errorMessage(error), true));
   });
   elements.checkDshUpdateButton.addEventListener("click", () => checkDshUpdate(false, true));
   elements.installDshUpdateButton.addEventListener("click", () => installDshUpdate(false));

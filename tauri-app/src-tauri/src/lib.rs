@@ -24,6 +24,7 @@ const DSH_VERSION: &str = "0.1.0-rc.6";
 const DSH_PACKAGE: &str = "@deepseek-ai/dsh";
 const RELEASES_URL: &str =
     "https://api.github.com/repos/misswell/deepseek-harness-desk/releases/latest";
+const RELEASES_PAGE_URL: &str = "https://github.com/misswell/deepseek-harness-desk/releases";
 const NPM_METADATA_URL: &str = "https://registry.npmjs.org/@deepseek-ai%2fdsh";
 
 fn macos_proxy_url_from_scutil(output: &str, scheme: &str) -> Option<String> {
@@ -2104,6 +2105,11 @@ fn open_release_page(url: String) -> Result<(), String> {
     open_external_url(&url)
 }
 
+#[tauri::command]
+fn open_releases_page() -> Result<(), String> {
+    open_external_url(RELEASES_PAGE_URL)
+}
+
 fn open_directory(path: &Path) -> Result<(), String> {
     fs::create_dir_all(path).map_err(|error| format!("创建目录失败：{error}"))?;
     #[cfg(target_os = "macos")]
@@ -2513,6 +2519,7 @@ pub fn run() {
             check_dsh_update,
             install_dsh_update,
             open_release_page,
+            open_releases_page,
             open_runtime_directory,
             open_logs_directory,
             set_launch_at_login,

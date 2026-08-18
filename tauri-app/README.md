@@ -1,6 +1,6 @@
 # DeepSeek Harness Desk（Tauri）
 
-这是 DeepSeek Harness Desk 0.3.14 的跨平台 Tauri v2 客户端。它使用一个固定的 `main` 窗口承载 Harness Web UI，窗口顶栏由 Tauri 原生拖动区域处理，并通过菜单栏/系统托盘唤醒隐藏窗口。
+这是 DeepSeek Harness Desk 0.3.15 的跨平台 Tauri v2 客户端。它使用一个固定的 `main` 窗口承载 Harness Web UI，窗口顶栏由 Tauri 原生拖动区域处理，并通过菜单栏/系统托盘唤醒隐藏窗口。
 
 ## 开发
 
