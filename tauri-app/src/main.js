@@ -83,6 +83,7 @@ const elements = {
   openRuntimeDirectoryButton: document.querySelector("#open-runtime-directory-button"),
   openLogsDirectoryButton: document.querySelector("#open-logs-directory-button"),
   aboutVersion: document.querySelector("#about-version"),
+  memorySaverToggle: document.querySelector("#memory-saver-toggle"),
   toast: document.querySelector("#toast"),
 };
 
@@ -103,6 +104,10 @@ const state = {
   updateChecking: false,
   busyOperation: null,
   zoom: DEFAULT_ZOOM,
+  memorySaver: localStorage.getItem("memorySaver") !== "false",
+  statusInterval: null,
+  frameUnloaded: false,
+  windowHidden: false,
 };
 
 const UPDATE_INTERVALS = {
@@ -377,6 +382,12 @@ function renderStatus() {
   elements.frameContainer.classList.toggle("hidden", !running);
 
   if (running && state.status?.url && state.frameUrl !== state.status.url) {
+    if (state.windowHidden) {
+      // Keep the heavy Harness UI unloaded while the window is hidden so the
+      // WebView can release its rendering memory; restore on the next show.
+      state.frameUnloaded = true;
+      return;
+    }
     state.frameUrl = state.status.url;
     elements.frameLoading.textContent = "正在加载 Harness 页面…";
     elements.frameLoading.classList.remove("hidden");
@@ -388,6 +399,7 @@ function renderStatus() {
 }
 
 function renderLogs() {
+  if (state.windowHidden) return;
   elements.logList.replaceChildren();
   if (!state.logs.length) {
     const empty = document.createElement("div");
@@ -579,6 +591,32 @@ function scheduleAutomaticUpdateChecks() {
       if (elements.autoCheckDshToggle.checked) await checkDshUpdate(true, false);
     }, interval);
   }, 3500);
+}
+
+function unloadHarnessFrame() {
+  if (!state.status?.running || state.frameUnloaded) return;
+  state.frameUnloaded = true;
+  state.frameUrl = "";
+  elements.frame.removeAttribute("src");
+  elements.frameLoading.classList.add("hidden");
+}
+
+function restoreHarnessFrame() {
+  if (!state.frameUnloaded) return;
+  state.frameUnloaded = false;
+  void refreshStatus();
+}
+
+function pauseStatusPolling() {
+  if (state.statusInterval) {
+    clearInterval(state.statusInterval);
+    state.statusInterval = null;
+  }
+}
+
+function resumeStatusPolling() {
+  if (state.statusInterval) return;
+  state.statusInterval = window.setInterval(refreshStatus, 2500);
 }
 
 async function refreshStatus() {
@@ -805,6 +843,11 @@ function bindEvents() {
     localStorage.setItem("autoCheckInterval", elements.autoCheckInterval.value);
     scheduleAutomaticUpdateChecks();
   });
+  elements.memorySaverToggle.addEventListener("change", () => {
+    const enabled = elements.memorySaverToggle.checked;
+    state.memorySaver = enabled;
+    localStorage.setItem("memorySaver", String(enabled));
+  });
   elements.runtimeInstallButton.addEventListener("click", installRuntime);
   elements.refreshRuntimeButton.addEventListener("click", refreshRuntime);
   elements.openRuntimeDirectoryButton.addEventListener("click", openRuntimeDirectory);
@@ -885,6 +928,17 @@ async function listenForOutput() {
       elements.appUpdateStatus.textContent = progress.message;
     }
   });
+  await listen("window-hidden", () => {
+    state.windowHidden = true;
+    pauseStatusPolling();
+    if (state.memorySaver) unloadHarnessFrame();
+  });
+  await listen("window-shown", () => {
+    state.windowHidden = false;
+    resumeStatusPolling();
+    restoreHarnessFrame();
+    renderLogs();
+  });
 }
 
 async function initialize() {
@@ -897,6 +951,7 @@ async function initialize() {
   elements.autoCheckDshToggle.checked = localStorage.getItem("autoCheckHarnessUpdates") !== "false";
   elements.autoInstallDshToggle.checked = localStorage.getItem("autoInstallHarnessUpdates") !== "false";
   elements.autoCheckInterval.value = localStorage.getItem("autoCheckInterval") || "hourly";
+  elements.memorySaverToggle.checked = state.memorySaver;
   bindEvents();
   renderSettingsTab();
   renderStatus();
@@ -918,7 +973,7 @@ async function initialize() {
   if (elements.autoCheckAppToggle.checked) await checkAppUpdate(false);
   if (elements.autoCheckDshToggle.checked) await checkDshUpdate(false, false);
   scheduleAutomaticUpdateChecks();
-  window.setInterval(refreshStatus, 2500);
+  resumeStatusPolling();
 }
 
 window.addEventListener("DOMContentLoaded", initialize);

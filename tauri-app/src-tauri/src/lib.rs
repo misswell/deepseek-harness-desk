@@ -2377,6 +2377,7 @@ fn set_dock_visibility(app: AppHandle, visible: bool) -> Result<(), String> {
         }
         app.run_on_main_thread(activate_macos_application)
             .map_err(|error| error.to_string())?;
+        let _ = app.emit("window-shown", ());
     }
     #[cfg(not(target_os = "macos"))]
     {
@@ -2414,6 +2415,9 @@ fn show_main_window<R: tauri::Runtime>(app: &AppHandle<R>) {
     {
         let _ = app.run_on_main_thread(activate_macos_application);
     }
+    // Wake the shell up again so it can restore the Harness web UI that was
+    // unloaded while the window was hidden.
+    let _ = app.emit("window-shown", ());
 }
 
 fn setup_app_menu<R: tauri::Runtime>(app: &mut tauri::App<R>) -> tauri::Result<()> {
@@ -2575,6 +2579,10 @@ pub fn run() {
             if let WindowEvent::CloseRequested { api, .. } = event {
                 api.prevent_close();
                 let _ = window.hide();
+                // The app keeps running in the tray after the window closes.
+                // Let the shell unload the Harness web UI so the WebView can
+                // release its (often several hundred MB) rendering memory.
+                let _ = window.app_handle().emit("window-hidden", ());
             }
         })
         .invoke_handler(tauri::generate_handler![

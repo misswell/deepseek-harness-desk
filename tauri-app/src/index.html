@@ -280,6 +280,17 @@
                   </div>
                 </div>
                 <p class="setting-note" id="runtime-install-status">首次启动会自动准备隔离的 Node.js 和 DeepSeek Harness，不依赖系统 Node.js 版本。</p>
+                <div class="settings-section-heading">内存与性能</div>
+                <div class="settings-group">
+                  <label class="setting-row">
+                    <span>
+                      <strong>窗口隐藏时释放 Harness 页面内存</strong>
+                      <small>关闭窗口到菜单栏/托盘时卸载 Harness 页面以释放内存；重新打开窗口时页面会重新加载，需要短暂等待。</small>
+                    </span>
+                    <input type="checkbox" id="memory-saver-toggle" />
+                  </label>
+                </div>
+                <p class="setting-note">释放的是渲染页面（WebView）占用的内存，Harness 后台服务会保持运行，重新打开窗口即可继续使用。</p>
               </div>
             </section>
 
