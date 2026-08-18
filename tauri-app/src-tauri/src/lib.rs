@@ -2344,7 +2344,7 @@ fn show_main_window<R: tauri::Runtime>(app: &AppHandle<R>) {
 }
 
 fn setup_app_menu<R: tauri::Runtime>(app: &mut tauri::App<R>) -> tauri::Result<()> {
-    let zoom_in = MenuItem::with_id(app, "zoom-in", "放大", true, Some("CmdOrCtrl+Shift+="))?;
+    let zoom_in = MenuItem::with_id(app, "zoom-in", "放大", true, Some("CmdOrCtrl+="))?;
     let zoom_out = MenuItem::with_id(app, "zoom-out", "缩小", true, Some("CmdOrCtrl+-"))?;
     let zoom_reset =
         MenuItem::with_id(app, "zoom-reset", "恢复默认大小", true, Some("CmdOrCtrl+0"))?;

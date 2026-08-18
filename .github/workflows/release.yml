@@ -40,18 +40,10 @@ jobs:
               --notes "$RELEASE_BODY"
           fi
 
-  release-macos:
+  release-macos-arm64:
     needs: prepare-release
-    name: release-macos-${{ matrix.arch }}
+    name: release-macos-arm64
     runs-on: macos-15
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - arch: arm64
-            target: aarch64-apple-darwin
-          - arch: x86_64
-            target: x86_64-apple-darwin
     steps:
       - name: Check out source
         uses: actions/checkout@v4
@@ -70,7 +62,7 @@ jobs:
         uses: dtolnay/rust-toolchain@stable
 
       - name: Install macOS target
-        run: rustup target add "${{ matrix.target }}"
+        run: rustup target add aarch64-apple-darwin
 
       - name: Install frontend dependencies
         run: npm ci --prefix tauri-app
@@ -78,7 +70,7 @@ jobs:
       - name: Move old test package outputs to trash
         run: node scripts/clean_test_packages.mjs
 
-      - name: Build macOS ${{ matrix.arch }} package
+      - name: Build macOS arm64 package
         uses: tauri-apps/tauri-action@v0
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -90,12 +82,70 @@ jobs:
           APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
         with:
           projectPath: tauri-app
-          args: --target ${{ matrix.target }}
+          args: --target aarch64-apple-darwin
           tagName: ${{ env.RELEASE_TAG }}
           releaseName: ${{ env.RELEASE_NAME }}
           releaseBody: ${{ env.RELEASE_BODY }}
           releaseDraft: true
           prerelease: false
+
+  release-macos-x86_64:
+    needs: prepare-release
+    name: release-macos-x86_64
+    runs-on: macos-15
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          ref: ${{ inputs.release_tag || github.ref }}
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+          cache-dependency-path: tauri-app/package-lock.json
+
+      - name: Set up Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Install macOS target
+        run: rustup target add x86_64-apple-darwin
+
+      - name: Install frontend dependencies
+        run: npm ci --prefix tauri-app
+
+      - name: Move old test package outputs to trash
+        run: node scripts/clean_test_packages.mjs
+
+      - name: Build macOS x86_64 package
+        uses: tauri-apps/tauri-action@v0
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE_P12 }}
+          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+          APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_DEVELOPER_ID }}
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_PASSWORD: ${{ secrets.APPLE_APP_SPECIFIC_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+        with:
+          projectPath: tauri-app
+          args: --target x86_64-apple-darwin
+          tagName: ${{ env.RELEASE_TAG }}
+          releaseName: ${{ env.RELEASE_NAME }}
+          releaseBody: ${{ env.RELEASE_BODY }}
+          releaseDraft: true
+          prerelease: false
+
+  publish-release:
+    needs: [release-macos-arm64]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Publish release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: gh release edit "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" --draft=false
 
   release-windows:
     needs: prepare-release
@@ -181,12 +231,3 @@ jobs:
           releaseBody: ${{ env.RELEASE_BODY }}
           releaseDraft: true
           prerelease: false
-
-  publish-release:
-    needs: [release-macos, release-windows, release-linux]
-    runs-on: ubuntu-latest
-    steps:
-      - name: Publish release
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: gh release edit "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" --draft=false
