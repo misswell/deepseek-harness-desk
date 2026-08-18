@@ -382,7 +382,8 @@ button:disabled {
 }
 
 .panel-kicker {
-  display: none;
+  display: block;
+  margin-bottom: 3px;
   color: var(--muted);
   font-size: 10px;
   font-weight: 650;
@@ -471,11 +472,6 @@ button:disabled {
   padding: 24px;
   color: #8e8e93;
   text-align: center;
-}
-
-.settings-panel .panel-heading {
-  border-bottom: 0;
-  padding-bottom: 10px;
 }
 
 .settings-layout {
