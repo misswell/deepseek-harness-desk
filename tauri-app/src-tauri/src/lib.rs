@@ -396,6 +396,70 @@ fn managed_node_root(app: Option<&AppHandle>) -> Option<PathBuf> {
         .map(|(_, path)| path)
 }
 
+/// Quote a path for a POSIX shell single-quoted string.
+fn shell_single_quote(value: &str) -> String {
+    format!("'{}'", value.replace('\'', "'\\''"))
+}
+
+/// Expose the managed `dsh` CLI to the user's shell.
+///
+/// The dsh launcher script starts with `#!/usr/bin/env node`, so running it
+/// directly from a terminal requires a system Node.js that may be missing or
+/// a different version than the one the App manages. This writes a small
+/// wrapper into `~/.local/bin/dsh` (which is on the default PATH for most
+/// Unix shells) that invokes the bundled runtime Node against the newest
+/// managed dsh package, so `dsh` works in the terminal without extra setup.
+///
+/// No-op when the dsh in use comes from `DSH_BIN` or the system PATH (it is
+/// already reachable), or on Windows.
+fn link_dsh_to_path(app: &AppHandle) {
+    #[cfg(unix)]
+    {
+        // Only create the wrapper when the active dsh is one we manage; a
+        // user-provided dsh (DSH_BIN / system PATH) is already reachable.
+        let Some((_, dsh_root)) = managed_dsh_version_paths(Some(app))
+            .into_iter()
+            .find(|(_, path)| is_executable(&dsh_executable(path)))
+        else {
+            return;
+        };
+        let Some(node_root) = managed_node_root(Some(app)) else {
+            return;
+        };
+        let node = node_executable(&node_root);
+        let script = dsh_executable(&dsh_root);
+
+        let Some(home) = home_directory() else {
+            return;
+        };
+        let bin_dir = home.join(".local/bin");
+        if !bin_dir.is_dir() && fs::create_dir_all(&bin_dir).is_err() {
+            return;
+        }
+
+        let wrapper = format!(
+            "#!/bin/sh\nexec {} {} \"$@\"\n",
+            shell_single_quote(&node.to_string_lossy()),
+            shell_single_quote(&script.to_string_lossy()),
+        );
+        let target = bin_dir.join("dsh");
+        let temp = bin_dir.join(".dsh-wrapper.tmp");
+        if fs::write(&temp, wrapper).is_err() {
+            return;
+        }
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let _ = fs::set_permissions(&temp, fs::Permissions::from_mode(0o755));
+        }
+        let _ = fs::rename(&temp, &target);
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = app;
+    }
+}
+
 fn legacy_runtime_root() -> Option<PathBuf> {
     home_directory().map(|home| {
         if cfg!(target_os = "macos") {
@@ -1172,6 +1236,7 @@ async fn install_runtime_inner(app: &AppHandle, state: &HarnessState) -> Result<
     state.runtime_installing.store(false, Ordering::Release);
     match result {
         Ok(()) => {
+            link_dsh_to_path(app);
             emit_runtime_progress(app, state, "运行时安装完成。", Some(1.0), true, None);
             Ok(())
         }
@@ -1734,6 +1799,7 @@ async fn install_dsh_update_inner(
         );
     }
     result?;
+    link_dsh_to_path(app);
     if was_running {
         start_harness_inner(app, state).await?;
     }
@@ -1954,6 +2020,7 @@ async fn start_harness_inner(
         emit_log(app, &state.logs, "desk", message);
         return Err(message.to_string());
     };
+    link_dsh_to_path(app);
 
     let reaped_processes = reap_orphaned_managed_harnesses(app);
     if !reaped_processes.is_empty() {
