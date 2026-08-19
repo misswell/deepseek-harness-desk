@@ -84,6 +84,9 @@ const elements = {
   openLogsDirectoryButton: document.querySelector("#open-logs-directory-button"),
   aboutVersion: document.querySelector("#about-version"),
   memorySaverToggle: document.querySelector("#memory-saver-toggle"),
+  notifyEnabledToggle: document.querySelector("#notify-enabled-toggle"),
+  notifyTaskToggle: document.querySelector("#notify-task-toggle"),
+  notifyInteractionToggle: document.querySelector("#notify-interaction-toggle"),
   toast: document.querySelector("#toast"),
 };
 
@@ -108,6 +111,9 @@ const state = {
   statusInterval: null,
   frameUnloaded: false,
   windowHidden: false,
+  notifyEnabled: localStorage.getItem("notifyEnabled") !== "false",
+  notifyTask: localStorage.getItem("notifyTask") !== "false",
+  notifyInteraction: localStorage.getItem("notifyInteraction") !== "false",
 };
 
 const UPDATE_INTERVALS = {
@@ -763,6 +769,18 @@ function toggleRestoreLastWindow() {
   localStorage.setItem("restoreLastWindow", String(elements.restoreLastWindowToggle.checked));
 }
 
+async function syncNotificationPrefs() {
+  try {
+    await call("set_notification_prefs", {
+      enabled: state.notifyEnabled,
+      task_completed: state.notifyTask,
+      interaction: state.notifyInteraction,
+    });
+  } catch (error) {
+    setToast(errorMessage(error), true);
+  }
+}
+
 async function openRuntimeDirectory() {
   try {
     await call("open_runtime_directory");
@@ -847,6 +865,21 @@ function bindEvents() {
     const enabled = elements.memorySaverToggle.checked;
     state.memorySaver = enabled;
     localStorage.setItem("memorySaver", String(enabled));
+  });
+  elements.notifyEnabledToggle.addEventListener("change", () => {
+    state.notifyEnabled = elements.notifyEnabledToggle.checked;
+    localStorage.setItem("notifyEnabled", String(state.notifyEnabled));
+    void syncNotificationPrefs();
+  });
+  elements.notifyTaskToggle.addEventListener("change", () => {
+    state.notifyTask = elements.notifyTaskToggle.checked;
+    localStorage.setItem("notifyTask", String(state.notifyTask));
+    void syncNotificationPrefs();
+  });
+  elements.notifyInteractionToggle.addEventListener("change", () => {
+    state.notifyInteraction = elements.notifyInteractionToggle.checked;
+    localStorage.setItem("notifyInteraction", String(state.notifyInteraction));
+    void syncNotificationPrefs();
   });
   elements.runtimeInstallButton.addEventListener("click", installRuntime);
   elements.refreshRuntimeButton.addEventListener("click", refreshRuntime);
@@ -952,12 +985,16 @@ async function initialize() {
   elements.autoInstallDshToggle.checked = localStorage.getItem("autoInstallHarnessUpdates") !== "false";
   elements.autoCheckInterval.value = localStorage.getItem("autoCheckInterval") || "hourly";
   elements.memorySaverToggle.checked = state.memorySaver;
+  elements.notifyEnabledToggle.checked = state.notifyEnabled;
+  elements.notifyTaskToggle.checked = state.notifyTask;
+  elements.notifyInteractionToggle.checked = state.notifyInteraction;
   bindEvents();
   renderSettingsTab();
   renderStatus();
   renderLogs();
   await listenForOutput();
   await Promise.all([refreshStatus(), refreshRuntime(), loadLogs()]);
+  await syncNotificationPrefs();
 
   if (state.status?.running) {
     state.phase = "running";

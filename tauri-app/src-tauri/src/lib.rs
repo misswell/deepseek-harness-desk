@@ -1,15 +1,19 @@
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::cmp::Ordering as VersionOrdering;
-use std::collections::{HashSet, VecDeque};
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::env;
 use std::fs::{self, OpenOptions};
 use std::io::{BufRead, BufReader, Read, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
-use std::sync::atomic::{AtomicBool, AtomicU16, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicI64, AtomicU16, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
+
+use futures_util::StreamExt;
+use tokio_tungstenite::connect_async;
+use tauri_plugin_notification::NotificationExt;
 
 use tauri::menu::{MenuBuilder, MenuItem, MenuItemKind, SubmenuBuilder};
 use tauri::tray::{MouseButton, TrayIconBuilder, TrayIconEvent};
@@ -102,6 +106,17 @@ struct HarnessState {
     runtime_installing: Arc<AtomicBool>,
     runtime_message: Arc<Mutex<String>>,
     app_update_installing: Arc<AtomicBool>,
+    notify_enabled: Arc<AtomicBool>,
+    notify_task_completed: Arc<AtomicBool>,
+    notify_interaction: Arc<AtomicBool>,
+    pending_attention: Arc<AtomicI64>,
+}
+
+#[derive(Serialize, Clone, Debug)]
+struct NotificationPrefsView {
+    enabled: bool,
+    task_completed: bool,
+    interaction: bool,
 }
 
 #[derive(Serialize, Clone, Debug)]
@@ -2120,6 +2135,217 @@ async fn start_harness_inner(
     }
 }
 
+const MAX_SEEN_INTERACTIONS: usize = 256;
+
+/// Start the background watcher that tails the Harness's live event streams
+/// (`/api/events.mux` + `/api/events.host`) and turns "needs interaction" and
+/// "task completed" into a dock badge and a system notification.
+fn spawn_task_watcher(app: AppHandle, state: HarnessState) {
+    tauri::async_runtime::spawn(async move {
+        loop {
+            let port = state.port.load(Ordering::Relaxed);
+            if port == 0 {
+                tokio::time::sleep(Duration::from_secs(1)).await;
+                continue;
+            }
+            let base = format!("ws://127.0.0.1:{port}");
+            let _ = watch_harness_events(
+                &app,
+                &state,
+                &format!("{base}/api/events.mux"),
+                &format!("{base}/api/events.host"),
+            )
+            .await;
+            tokio::time::sleep(Duration::from_millis(1500)).await;
+        }
+    });
+}
+
+/// Keep both WebSocket downlinks open for as long as they last. Returns when
+/// either stream closes or fails; the caller reconnects after a short pause.
+async fn watch_harness_events(
+    app: &AppHandle,
+    state: &HarnessState,
+    mux_url: &str,
+    host_url: &str,
+) -> Result<(), String> {
+    let (mut mux, _) = connect_async(mux_url).await.map_err(|error| error.to_string())?;
+    let (mut host, _) = connect_async(host_url).await.map_err(|error| error.to_string())?;
+    let mut running_sessions = HashMap::new();
+    let mut seen_interactions = VecDeque::new();
+    loop {
+        tokio::select! {
+            frame = mux.next() => {
+                match frame {
+                    Some(Ok(message)) => {
+                        if let Ok(text) = message.to_text() {
+                            handle_mux_frame(app, state, text, &mut seen_interactions);
+                        }
+                    }
+                    Some(Err(error)) => return Err(error.to_string()),
+                    None => return Ok(()),
+                }
+            }
+            frame = host.next() => {
+                match frame {
+                    Some(Ok(message)) => {
+                        if let Ok(text) = message.to_text() {
+                            handle_host_frame(app, state, text, &mut running_sessions);
+                        }
+                    }
+                    Some(Err(error)) => return Err(error.to_string()),
+                    None => return Ok(()),
+                }
+            }
+        }
+    }
+}
+
+fn handle_mux_frame(
+    app: &AppHandle,
+    state: &HarnessState,
+    text: &str,
+    seen_interactions: &mut VecDeque<String>,
+) {
+    let Ok(envelope) = serde_json::from_str::<serde_json::Value>(text) else {
+        return;
+    };
+    let Some(payload) = envelope.get("payload") else {
+        return;
+    };
+    let Some(event_type) = payload.get("type").and_then(|value| value.as_str()) else {
+        return;
+    };
+    match event_type {
+        "question/requested" => {
+            let body = payload
+                .get("questions")
+                .and_then(|value| value.as_array())
+                .and_then(|items| items.first())
+                .and_then(|item| item.get("question"))
+                .and_then(|value| value.as_str())
+                .unwrap_or("Harness 正在等待你的回答");
+            let rpc_id = envelope.get("rpcId").and_then(|value| value.as_str()).unwrap_or("");
+            let key = interaction_key(payload, rpc_id);
+            if is_new_interaction(seen_interactions, &key) {
+                on_needs_interaction(app, state, "需要你的输入", body);
+            }
+        }
+        "approval/requested" => {
+            let rpc_id = envelope.get("rpcId").and_then(|value| value.as_str()).unwrap_or("");
+            let key = interaction_key(payload, rpc_id);
+            if is_new_interaction(seen_interactions, &key) {
+                on_needs_interaction(app, state, "需要你的批准", "Harness 需要你的批准才能继续");
+            }
+        }
+        _ => {}
+    }
+}
+
+fn handle_host_frame(
+    app: &AppHandle,
+    state: &HarnessState,
+    text: &str,
+    running_sessions: &mut HashMap<String, bool>,
+) {
+    let Ok(envelope) = serde_json::from_str::<serde_json::Value>(text) else {
+        return;
+    };
+    let Some(payload) = envelope.get("payload") else {
+        return;
+    };
+    if payload.get("type").and_then(|value| value.as_str()) != Some("host/session-status") {
+        return;
+    }
+    let running = payload.get("running").and_then(|value| value.as_bool()).unwrap_or(false);
+    let Some(session_id) = payload.get("sessionId").and_then(|value| value.as_str()) else {
+        return;
+    };
+    if session_id.is_empty() {
+        return;
+    }
+    let previous = running_sessions.insert(session_id.to_string(), running);
+    if previous == Some(true) && !running {
+        on_task_completed(app, state, session_id);
+    }
+}
+
+/// Stable dedup key for a pending interaction: approval id when present,
+/// otherwise the first question id, otherwise the wire rpcId. Survives
+/// reconnect replay (the harness re-emits still-pending requests).
+fn interaction_key(payload: &serde_json::Value, rpc_id: &str) -> String {
+    if let Some(approval_id) = payload.get("approvalId").and_then(|value| value.as_str()) {
+        return format!("a:{approval_id}");
+    }
+    if let Some(question_id) = payload
+        .get("questions")
+        .and_then(|value| value.as_array())
+        .and_then(|items| items.first())
+        .and_then(|item| item.get("id"))
+        .and_then(|value| value.as_str())
+    {
+        return format!("q:{question_id}");
+    }
+    format!("q:{rpc_id}")
+}
+
+fn is_new_interaction(seen: &mut VecDeque<String>, key: &str) -> bool {
+    if seen.iter().any(|entry| entry == key) {
+        return false;
+    }
+    seen.push_back(key.to_string());
+    while seen.len() > MAX_SEEN_INTERACTIONS {
+        seen.pop_front();
+    }
+    true
+}
+
+fn window_is_focused(app: &AppHandle) -> bool {
+    app.get_webview_window("main")
+        .and_then(|window| window.is_focused().ok())
+        .unwrap_or(false)
+}
+
+fn raise_attention(app: &AppHandle, state: &HarnessState, title: &str, body: &str) {
+    let count = state.pending_attention.fetch_add(1, Ordering::AcqRel) + 1;
+    if let Some(window) = app.get_webview_window("main") {
+        let _ = window.set_badge_count(Some(count));
+    }
+    let _ = app.notification().builder().title(title).body(body).show();
+}
+
+fn on_needs_interaction(app: &AppHandle, state: &HarnessState, title: &str, body: &str) {
+    if !state.notify_enabled.load(Ordering::Acquire) || !state.notify_interaction.load(Ordering::Acquire) {
+        return;
+    }
+    if window_is_focused(app) {
+        return;
+    }
+    raise_attention(app, state, title, body);
+}
+
+fn on_task_completed(app: &AppHandle, state: &HarnessState, session_id: &str) {
+    if !state.notify_enabled.load(Ordering::Acquire) || !state.notify_task_completed.load(Ordering::Acquire) {
+        return;
+    }
+    if window_is_focused(app) {
+        return;
+    }
+    let body = if session_id.is_empty() {
+        "Harness 已完成一项任务".to_string()
+    } else {
+        format!("会话 {session_id} 已完成任务")
+    };
+    raise_attention(app, state, "任务已完成", &body);
+}
+
+fn clear_badge<R: tauri::Runtime>(app: &AppHandle<R>, state: &HarnessState) {
+    state.pending_attention.store(0, Ordering::Release);
+    if let Some(window) = app.get_webview_window("main") {
+        let _ = window.set_badge_count(None);
+    }
+}
+
 #[tauri::command]
 fn harness_status(state: State<'_, HarnessState>) -> HarnessStatus {
     snapshot(&state)
@@ -2128,6 +2354,27 @@ fn harness_status(state: State<'_, HarnessState>) -> HarnessStatus {
 #[tauri::command]
 fn runtime_status(app: AppHandle, state: State<'_, HarnessState>) -> RuntimeStatus {
     runtime_status_snapshot(&app, &state)
+}
+
+#[tauri::command]
+fn set_notification_prefs(
+    state: State<'_, HarnessState>,
+    enabled: bool,
+    task_completed: bool,
+    interaction: bool,
+) {
+    state.notify_enabled.store(enabled, Ordering::Release);
+    state.notify_task_completed.store(task_completed, Ordering::Release);
+    state.notify_interaction.store(interaction, Ordering::Release);
+}
+
+#[tauri::command]
+fn notification_prefs(state: State<'_, HarnessState>) -> NotificationPrefsView {
+    NotificationPrefsView {
+        enabled: state.notify_enabled.load(Ordering::Acquire),
+        task_completed: state.notify_task_completed.load(Ordering::Acquire),
+        interaction: state.notify_interaction.load(Ordering::Acquire),
+    }
 }
 
 #[tauri::command]
@@ -2378,6 +2625,8 @@ fn set_dock_visibility(app: AppHandle, visible: bool) -> Result<(), String> {
         app.run_on_main_thread(activate_macos_application)
             .map_err(|error| error.to_string())?;
         let _ = app.emit("window-shown", ());
+        let state = app.state::<HarnessState>();
+        clear_badge(&app, state.inner());
     }
     #[cfg(not(target_os = "macos"))]
     {
@@ -2418,6 +2667,9 @@ fn show_main_window<R: tauri::Runtime>(app: &AppHandle<R>) {
     // Wake the shell up again so it can restore the Harness web UI that was
     // unloaded while the window was hidden.
     let _ = app.emit("window-shown", ());
+    // The user is back — clear the attention badge.
+    let state = app.state::<HarnessState>();
+    clear_badge(app, state.inner());
 }
 
 fn setup_app_menu<R: tauri::Runtime>(app: &mut tauri::App<R>) -> tauri::Result<()> {
@@ -2549,6 +2801,10 @@ pub fn run() {
         runtime_installing: Arc::new(AtomicBool::new(false)),
         runtime_message: Arc::new(Mutex::new(String::new())),
         app_update_installing: Arc::new(AtomicBool::new(false)),
+        notify_enabled: Arc::new(AtomicBool::new(true)),
+        notify_task_completed: Arc::new(AtomicBool::new(true)),
+        notify_interaction: Arc::new(AtomicBool::new(true)),
+        pending_attention: Arc::new(AtomicI64::new(0)),
     };
 
     tauri::Builder::default()
@@ -2556,11 +2812,13 @@ pub fn run() {
             show_main_window(app);
         }))
         .plugin(tauri_plugin_opener::init())
+        .plugin(tauri_plugin_notification::init())
         .manage(state)
         .setup(|app| {
             setup_app_menu(app)?;
             #[cfg(feature = "tray-icon")]
             setup_tray(app)?;
+            spawn_task_watcher(app.handle().clone(), app.state::<HarnessState>().inner().clone());
             Ok(())
         })
         .on_menu_event(|app, event| match event.id().as_ref() {
@@ -2583,6 +2841,10 @@ pub fn run() {
                 // Let the shell unload the Harness web UI so the WebView can
                 // release its (often several hundred MB) rendering memory.
                 let _ = window.app_handle().emit("window-hidden", ());
+            } else if let WindowEvent::Focused(true) = event {
+                // The user is back — clear the attention badge.
+                let state = window.app_handle().state::<HarnessState>();
+                clear_badge(window.app_handle(), state.inner());
             }
         })
         .invoke_handler(tauri::generate_handler![
@@ -2608,6 +2870,8 @@ pub fn run() {
             window_hide,
             window_start_dragging,
             set_dock_visibility,
+            set_notification_prefs,
+            notification_prefs,
         ])
         .build(tauri::generate_context!())
         .expect("error while building tauri application")
@@ -2733,5 +2997,33 @@ mod tests {
         assert!(selected.name.ends_with("_aarch64.app.tar.gz"));
         #[cfg(target_arch = "x86_64")]
         assert!(selected.name.ends_with("_x64.app.tar.gz"));
+    }
+
+    #[test]
+    fn interaction_keys_are_stable_and_unique() {
+        let approval = serde_json::json!({ "approvalId": "approval-1" });
+        assert_eq!(interaction_key(&approval, "rpc-a"), "a:approval-1");
+
+        let question = serde_json::json!({ "questions": [{ "id": "q-1", "question": "继续？" }] });
+        assert_eq!(interaction_key(&question, "rpc-a"), "q:q-1");
+
+        // Unknown shapes fall back to the wire rpcId and stay distinct.
+        let fallback = serde_json::json!({});
+        assert_eq!(interaction_key(&fallback, "rpc-a"), "q:rpc-a");
+        assert_ne!(interaction_key(&fallback, "rpc-a"), interaction_key(&fallback, "rpc-b"));
+    }
+
+    #[test]
+    fn interaction_dedup_is_bounded() {
+        let mut seen = VecDeque::new();
+        assert!(is_new_interaction(&mut seen, "a:1"));
+        assert!(!is_new_interaction(&mut seen, "a:1"));
+        assert!(is_new_interaction(&mut seen, "a:2"));
+        for index in 0..MAX_SEEN_INTERACTIONS {
+            assert!(is_new_interaction(&mut seen, &format!("k:{index}")));
+        }
+        assert!(seen.len() <= MAX_SEEN_INTERACTIONS);
+        // A key evicted by the bound is treated as new again.
+        assert!(is_new_interaction(&mut seen, "a:1"));
     }
 }

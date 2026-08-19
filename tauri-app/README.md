@@ -1,6 +1,6 @@
 # DeepSeek Harness Desk（Tauri）
 
-这是 DeepSeek Harness Desk 0.3.17 的跨平台 Tauri v2 客户端。它使用一个固定的 `main` 窗口承载 Harness Web UI，窗口顶栏由 Tauri 原生拖动区域处理，并通过菜单栏/系统托盘唤醒隐藏窗口。
+这是 DeepSeek Harness Desk 0.3.18 的跨平台 Tauri v2 客户端。它使用一个固定的 `main` 窗口承载 Harness Web UI，窗口顶栏由 Tauri 原生拖动区域处理，并通过菜单栏/系统托盘唤醒隐藏窗口。
 
 ## 开发
 
@@ -24,3 +24,5 @@ npm run build
 图标由仓库中的 `Assets/DeepSeekHarnessIcon-Prepared-1024.png` 生成，macOS、Windows 和 Linux 包使用同一套品牌资源。macOS 发布时分别构建 Apple Silicon（arm64）和 Intel（x86_64）安装包。
 
 主窗口支持快捷键缩放：macOS 使用 `⌘ +` / `⌘ -` / `⌘ 0`，Windows 和 Linux 使用 `Ctrl +` / `Ctrl -` / `Ctrl 0`，缩放范围为 75%–175%，设置会自动保存。
+
+应用通过订阅 Harness 的实时事件流（`/api/events.mux` + `/api/events.host`）提供任务提醒：Harness 完成任务、向你提问或请求批准时，在应用图标上显示角标（macOS / Linux）并发送系统通知；仅当窗口未聚焦时提醒，回到窗口后角标自动清除。可在“设置 → 高级 → 通知提醒”中开关。

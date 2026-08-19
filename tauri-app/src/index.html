@@ -291,6 +291,31 @@
                   </label>
                 </div>
                 <p class="setting-note">释放的是渲染页面（WebView）占用的内存，Harness 后台服务会保持运行，重新打开窗口即可继续使用。</p>
+                <div class="settings-section-heading">通知提醒</div>
+                <div class="settings-group">
+                  <label class="setting-row">
+                    <span>
+                      <strong>启用任务通知</strong>
+                      <small>任务完成或需要交互时，在应用图标上显示角标并发送系统通知。</small>
+                    </span>
+                    <input type="checkbox" id="notify-enabled-toggle" />
+                  </label>
+                  <label class="setting-row">
+                    <span>
+                      <strong>任务完成时提醒</strong>
+                      <small>Harness 完成一项任务后通知你。</small>
+                    </span>
+                    <input type="checkbox" id="notify-task-toggle" />
+                  </label>
+                  <label class="setting-row">
+                    <span>
+                      <strong>需要交互时提醒</strong>
+                      <small>Harness 向你提问或请求批准时通知你。</small>
+                    </span>
+                    <input type="checkbox" id="notify-interaction-toggle" />
+                  </label>
+                </div>
+                <p class="setting-note">仅当窗口未处于聚焦状态时才会提醒，避免打扰正在使用的你；回到窗口后角标会自动清除。</p>
               </div>
             </section>
 
