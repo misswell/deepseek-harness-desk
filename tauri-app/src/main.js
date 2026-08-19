@@ -93,6 +93,7 @@ const elements = {
   aboutVersion: document.querySelector("#about-version"),
   memorySaverToggle: document.querySelector("#memory-saver-toggle"),
   memorySaverUnfocusToggle: document.querySelector("#memory-saver-unfocus-toggle"),
+  memorySaverRecycleToggle: document.querySelector("#memory-saver-recycle-toggle"),
   notifyEnabledToggle: document.querySelector("#notify-enabled-toggle"),
   notifyTaskToggle: document.querySelector("#notify-task-toggle"),
   notifyInteractionToggle: document.querySelector("#notify-interaction-toggle"),
@@ -118,8 +119,17 @@ const state = {
   zoom: DEFAULT_ZOOM,
   memorySaver: localStorage.getItem("memorySaver") !== "false",
   memorySaverUnfocus: localStorage.getItem("memorySaverUnfocus") !== "false",
+  memorySaverRecycle: localStorage.getItem("memorySaverRecycle") !== "false",
+  lastInteractionAt: Date.now(),
+  lastRecycleAt: 0,
+  recycleTimer: null,
   statusInterval: null,
   frameUnloaded: false,
+  // The Harness process the currently loaded iframe document belongs to. A
+  // stop + start (or restart) usually reuses port 3080, so the URL alone can
+  // not tell us the frame is stale; compare the PID to force a reload whenever
+  // the running server is a different process than the one we loaded.
+  framePid: null,
   windowHidden: false,
   windowFocused: true,
   unfocusTimer: null,
@@ -144,7 +154,16 @@ const UPDATE_INTERVALS = {
 
 // How long the window may stay unfocused before the Harness page is unloaded
 // to release memory; the page reloads automatically when you return.
-const UNFOCUS_UNLOAD_DELAY = 60 * 1000;
+const UNFOCUS_UNLOAD_DELAY = 20 * 1000;
+
+// Idle page recycling ("extreme" memory mode): while the window is visible and
+// focused, if the Harness produces no backend events and the shell sees no
+// interaction for this long, reload the page so the WebKit renderer flushes the
+// heap it accumulated while rendering long sessions. The dsh backend keeps all
+// session state, so the page re-syncs and nothing is lost.
+const PAGE_RECYCLE_IDLE_MS = 10 * 60 * 1000;
+const PAGE_RECYCLE_COOLDOWN_MS = 10 * 60 * 1000;
+const PAGE_RECYCLE_CHECK_MS = 30 * 1000;
 
 function errorMessage(error) {
   if (typeof error === "string") return error;
@@ -419,16 +438,31 @@ function renderStatus() {
   elements.errorMessage.textContent = state.status?.error || t("error.unexpected");
   elements.frameContainer.classList.toggle("hidden", !running);
 
-  if (running && state.status?.url && state.frameUrl !== state.status.url) {
+  const nextPid = running ? state.status?.pid ?? null : null;
+  const urlChanged = running && state.status?.url && state.frameUrl !== state.status.url;
+  // Restarting the Harness usually reuses the same port, so the URL is
+  // unchanged even though the served page came from the now-dead process.
+  // Reload whenever the running process differs from the one the frame was
+  // loaded for, otherwise the iframe keeps showing the stale (white) page.
+  const pidChanged = nextPid != null && nextPid !== state.framePid;
+  if ((urlChanged || pidChanged) && state.status?.url) {
     if (state.windowHidden) {
       // Keep the heavy Harness UI unloaded while the window is hidden so the
       // WebView can release its rendering memory; restore on the next show.
       state.frameUnloaded = true;
+      state.framePid = nextPid;
       return;
     }
     state.frameUrl = state.status.url;
+    state.framePid = nextPid;
     elements.frameLoading.textContent = t("frame.loading");
     elements.frameLoading.classList.remove("hidden");
+    if (elements.frame.getAttribute("src") === state.status.url) {
+      // Same URL but a new Harness process: assigning the identical src is a
+      // no-op, so blank the frame first to force a fresh navigation to the
+      // restarted server.
+      elements.frame.removeAttribute("src");
+    }
     elements.frame.src = state.status.url;
   }
   renderAppUpdate();
@@ -667,6 +701,7 @@ function unloadHarnessFrame() {
   if (!state.status?.running || state.frameUnloaded) return;
   state.frameUnloaded = true;
   state.frameUrl = "";
+  state.framePid = null;
   elements.frame.removeAttribute("src");
   elements.frameLoading.classList.add("hidden");
 }
@@ -687,6 +722,45 @@ function pauseStatusPolling() {
 function resumeStatusPolling() {
   if (state.statusInterval) return;
   state.statusInterval = window.setInterval(refreshStatus, 2500);
+}
+
+// Track how recently the user touched the shell so the idle recycler can tell
+// "the user walked away" from "the user is actively working". Events inside the
+// cross-origin Harness iframe never reach the shell page, so the backend event
+// timestamp (status.last_event_at) is the secondary activity signal.
+const INTERACTION_EVENTS = ["mousedown", "mousemove", "keydown", "wheel", "touchstart", "pointerdown"];
+function bindInteractionTracking() {
+  for (const eventName of INTERACTION_EVENTS) {
+    window.addEventListener(eventName, () => {
+      state.lastInteractionAt = Date.now();
+    }, { capture: true, passive: true });
+  }
+}
+
+// Force the Harness iframe to reload so the WebKit renderer flushes the memory
+// it accumulated while rendering a long session. The dsh backend keeps every
+// session's state, so after the brief reload the page re-syncs and continues.
+function recycleHarnessFrame() {
+  if (!state.status?.running || !state.status?.url) return;
+  state.frameUrl = "";
+  state.framePid = null;
+  elements.frame.removeAttribute("src");
+  renderStatus();
+}
+
+function checkPageRecycle() {
+  if (!state.memorySaverRecycle) return;
+  if (state.windowHidden || !state.windowFocused) return;
+  if (state.phase !== "running" || !state.status?.running || state.busy) return;
+  if (state.frameUnloaded || !state.frameUrl) return;
+  const now = Date.now();
+  if (now - state.lastInteractionAt < PAGE_RECYCLE_IDLE_MS) return;
+  const lastEventAt = state.status?.last_event_at ?? 0;
+  if (lastEventAt > 0 && now - lastEventAt < PAGE_RECYCLE_IDLE_MS) return;
+  if (now - state.lastRecycleAt < PAGE_RECYCLE_COOLDOWN_MS) return;
+  recycleHarnessFrame();
+  state.lastRecycleAt = now;
+  setToast(t("toast.memoryRecycled"));
 }
 
 function scheduleUnfocusUnload() {
@@ -717,6 +791,7 @@ async function refreshStatus() {
     } else if (!state.busy && state.phase === "running") {
       state.phase = "idle";
       state.frameUrl = "";
+      state.framePid = null;
       elements.frame.removeAttribute("src");
     }
     renderStatus();
@@ -792,6 +867,7 @@ async function stopHarness() {
     state.status = await call("stop_harness");
     state.phase = "idle";
     state.frameUrl = "";
+    state.framePid = null;
     elements.frame.removeAttribute("src");
     setToast(t("toast.harnessStopped"));
   } catch (error) {
@@ -957,6 +1033,10 @@ function bindEvents() {
     localStorage.setItem("memorySaverUnfocus", String(state.memorySaverUnfocus));
     if (!state.memorySaverUnfocus) cancelUnfocusUnload();
   });
+  elements.memorySaverRecycleToggle.addEventListener("change", () => {
+    state.memorySaverRecycle = elements.memorySaverRecycleToggle.checked;
+    localStorage.setItem("memorySaverRecycle", String(state.memorySaverRecycle));
+  });
   elements.notifyEnabledToggle.addEventListener("change", () => {
     state.notifyEnabled = elements.notifyEnabledToggle.checked;
     localStorage.setItem("notifyEnabled", String(state.notifyEnabled));
@@ -1090,6 +1170,7 @@ async function initialize() {
   elements.autoCheckInterval.value = localStorage.getItem("autoCheckInterval") || "hourly";
   elements.memorySaverToggle.checked = state.memorySaver;
   elements.memorySaverUnfocusToggle.checked = state.memorySaverUnfocus;
+  elements.memorySaverRecycleToggle.checked = state.memorySaverRecycle;
   elements.notifyEnabledToggle.checked = state.notifyEnabled;
   elements.notifyTaskToggle.checked = state.notifyTask;
   elements.notifyInteractionToggle.checked = state.notifyInteraction;
@@ -1097,6 +1178,7 @@ async function initialize() {
   document.documentElement.lang = lang === "zh" ? "zh-CN" : "en";
   applyStaticTranslations(document, lang);
   bindEvents();
+  bindInteractionTracking();
   renderSettingsTab();
   renderStatus();
   renderLogs();
@@ -1119,6 +1201,7 @@ async function initialize() {
   if (elements.autoCheckAppToggle.checked) await checkAppUpdate(false);
   if (elements.autoCheckDshToggle.checked) await checkDshUpdate(false, false);
   scheduleAutomaticUpdateChecks();
+  state.recycleTimer = window.setInterval(checkPageRecycle, PAGE_RECYCLE_CHECK_MS);
   resumeStatusPolling();
 }
 

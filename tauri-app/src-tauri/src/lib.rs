@@ -103,6 +103,11 @@ struct HarnessState {
     logs: Arc<Mutex<VecDeque<HarnessLog>>>,
     last_error: Arc<Mutex<Option<String>>>,
     last_exit_code: Arc<Mutex<Option<i32>>>,
+    // Unix-millis timestamp of the most recent backend event frame received by
+    // the task watcher; 0 when no event has been seen yet. The shell uses this
+    // to decide when the Harness has been idle long enough to safely recycle
+    // the WebView page and reclaim the renderer's accumulated memory.
+    last_event_at: Arc<AtomicI64>,
     runtime_installing: Arc<AtomicBool>,
     runtime_message: Arc<Mutex<String>>,
     app_update_installing: Arc<AtomicBool>,
@@ -141,6 +146,8 @@ struct HarnessStatus {
     exit_code: Option<i32>,
     #[serde(skip_serializing_if = "Option::is_none")]
     error: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    last_event_at: Option<i64>,
 }
 
 #[derive(Serialize, Clone, Debug)]
@@ -1927,6 +1934,17 @@ fn set_exit_code(state: &HarnessState, code: Option<i32>) {
     }
 }
 
+fn now_millis() -> i64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|duration| duration.as_millis() as i64)
+        .unwrap_or(0)
+}
+
+fn touch_harness_activity(state: &HarnessState) {
+    state.last_event_at.store(now_millis(), Ordering::Release);
+}
+
 fn snapshot(state: &HarnessState) -> HarnessStatus {
     let mut running = false;
     let mut pid = None;
@@ -1978,6 +1996,10 @@ fn snapshot(state: &HarnessState) -> HarnessStatus {
         dsh_path,
         exit_code: state.last_exit_code.lock().ok().and_then(|code| *code),
         error: state.last_error.lock().ok().and_then(|error| error.clone()),
+        last_event_at: {
+            let timestamp = state.last_event_at.load(Ordering::Acquire);
+            (timestamp > 0).then_some(timestamp)
+        },
     }
 }
 
@@ -2186,6 +2208,7 @@ async fn watch_harness_events(
             frame = mux.next() => {
                 match frame {
                     Some(Ok(message)) => {
+                        touch_harness_activity(state);
                         if let Ok(text) = message.to_text() {
                             handle_mux_frame(app, state, text, &mut seen_interactions);
                         }
@@ -2197,6 +2220,7 @@ async fn watch_harness_events(
             frame = host.next() => {
                 match frame {
                     Some(Ok(message)) => {
+                        touch_harness_activity(state);
                         if let Ok(text) = message.to_text() {
                             handle_host_frame(app, state, text, &mut running_sessions);
                         }
@@ -2882,6 +2906,7 @@ pub fn run() {
         logs: Arc::new(Mutex::new(VecDeque::new())),
         last_error: Arc::new(Mutex::new(None)),
         last_exit_code: Arc::new(Mutex::new(None)),
+        last_event_at: Arc::new(AtomicI64::new(0)),
         runtime_installing: Arc::new(AtomicBool::new(false)),
         runtime_message: Arc::new(Mutex::new(String::new())),
         app_update_installing: Arc::new(AtomicBool::new(false)),

@@ -307,6 +307,13 @@
                     </span>
                     <input type="checkbox" id="memory-saver-unfocus-toggle" />
                   </label>
+                  <label class="setting-row">
+                    <span>
+                      <strong data-i18n="advanced.memorySaverRecycle">窗口空闲时自动回收页面内存</strong>
+                      <small data-i18n="advanced.memorySaverRecycleDesc">窗口可见且 Harness 持续空闲（约 10 分钟无事件、无交互）时自动重新加载页面，释放渲染进程累积的内存；后端会话与历史完整保留，页面会短暂刷新。</small>
+                    </span>
+                    <input type="checkbox" id="memory-saver-recycle-toggle" />
+                  </label>
                 </div>
                 <p class="setting-note" data-i18n="advanced.memorySaverNote">释放的是渲染页面（WebView）占用的内存，Harness 后台服务会保持运行，重新打开窗口即可继续使用。</p>
                 <div class="settings-section-heading" data-i18n="advanced.section.notify">通知提醒</div>
