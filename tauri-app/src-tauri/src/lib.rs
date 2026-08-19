@@ -781,10 +781,17 @@ fn spawn_dsh(command: &DshCommand, port: u16, app: &AppHandle) -> std::io::Resul
         Command::new(&command.program)
     };
 
+    // Cap the Harness backend's V8 heap so a long-lived session cannot balloon
+    // to multiple GB of memory. 1 GB is ~5x the current steady-state usage.
+    let node_options = env::var("NODE_OPTIONS")
+        .map(|existing| format!("{existing} --max-old-space-size=1024"))
+        .unwrap_or_else(|_| "--max-old-space-size=1024".to_string());
+
     process
         .args(["web", "--port", &port.to_string()])
         .current_dir(home_directory().unwrap_or_else(|| PathBuf::from(".")))
         .env("PATH", process_path(&command.program, app))
+        .env("NODE_OPTIONS", node_options)
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
@@ -2923,9 +2930,15 @@ pub fn run() {
                 // release its (often several hundred MB) rendering memory.
                 let _ = window.app_handle().emit("window-hidden", ());
             } else if let WindowEvent::Focused(true) = event {
-                // The user is back — clear the attention badge.
+                // The user is back — clear the attention badge and let the
+                // shell reload the Harness page if it was unloaded on unfocus.
                 let state = window.app_handle().state::<HarnessState>();
                 clear_badge(window.app_handle(), state.inner());
+                let _ = window.app_handle().emit("window-focused", ());
+            } else if let WindowEvent::Focused(false) = event {
+                // The window is visible but no longer active; the shell may
+                // choose to release the Harness page after a delay.
+                let _ = window.app_handle().emit("window-unfocused", ());
             }
         })
         .invoke_handler(tauri::generate_handler![

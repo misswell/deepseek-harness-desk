@@ -139,7 +139,7 @@ jobs:
           prerelease: false
 
   publish-release:
-    needs: [release-macos-arm64]
+    needs: [release-macos-arm64, release-macos-x86_64, release-windows, release-linux]
     runs-on: ubuntu-latest
     steps:
       - name: Publish release

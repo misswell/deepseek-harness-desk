@@ -300,6 +300,13 @@
                     </span>
                     <input type="checkbox" id="memory-saver-toggle" />
                   </label>
+                  <label class="setting-row">
+                    <span>
+                      <strong data-i18n="advanced.memorySaverUnfocus">窗口失焦后释放页面内存</strong>
+                      <small data-i18n="advanced.memorySaverUnfocusDesc">窗口失焦 60 秒后卸载 Harness 页面以释放内存；重新回到窗口时页面自动重新加载。</small>
+                    </span>
+                    <input type="checkbox" id="memory-saver-unfocus-toggle" />
+                  </label>
                 </div>
                 <p class="setting-note" data-i18n="advanced.memorySaverNote">释放的是渲染页面（WebView）占用的内存，Harness 后台服务会保持运行，重新打开窗口即可继续使用。</p>
                 <div class="settings-section-heading" data-i18n="advanced.section.notify">通知提醒</div>

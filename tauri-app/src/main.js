@@ -92,6 +92,7 @@ const elements = {
   openLogsDirectoryButton: document.querySelector("#open-logs-directory-button"),
   aboutVersion: document.querySelector("#about-version"),
   memorySaverToggle: document.querySelector("#memory-saver-toggle"),
+  memorySaverUnfocusToggle: document.querySelector("#memory-saver-unfocus-toggle"),
   notifyEnabledToggle: document.querySelector("#notify-enabled-toggle"),
   notifyTaskToggle: document.querySelector("#notify-task-toggle"),
   notifyInteractionToggle: document.querySelector("#notify-interaction-toggle"),
@@ -116,9 +117,12 @@ const state = {
   busyOperation: null,
   zoom: DEFAULT_ZOOM,
   memorySaver: localStorage.getItem("memorySaver") !== "false",
+  memorySaverUnfocus: localStorage.getItem("memorySaverUnfocus") !== "false",
   statusInterval: null,
   frameUnloaded: false,
   windowHidden: false,
+  windowFocused: true,
+  unfocusTimer: null,
   notifyEnabled: localStorage.getItem("notifyEnabled") !== "false",
   notifyTask: localStorage.getItem("notifyTask") !== "false",
   notifyInteraction: localStorage.getItem("notifyInteraction") !== "false",
@@ -137,6 +141,10 @@ const UPDATE_INTERVALS = {
   daily: 24 * 60 * 60 * 1000,
   weekly: 7 * 24 * 60 * 60 * 1000,
 };
+
+// How long the window may stay unfocused before the Harness page is unloaded
+// to release memory; the page reloads automatically when you return.
+const UNFOCUS_UNLOAD_DELAY = 60 * 1000;
 
 function errorMessage(error) {
   if (typeof error === "string") return error;
@@ -428,32 +436,49 @@ function renderStatus() {
   setBusy(state.busy);
 }
 
+function createLogRow(log) {
+  const row = document.createElement("div");
+  row.className = "log-row";
+  const stream = document.createElement("span");
+  stream.className = `log-stream ${log.stream || "desk"}`;
+  stream.textContent = log.stream || "desk";
+  const message = document.createElement("span");
+  message.className = "log-message";
+  message.textContent = log.message || "";
+  row.append(stream, message);
+  return row;
+}
+
+// Full rebuild from state.logs. Only runs while the logs panel is open so the
+// WebView does not keep a hidden 500-row list alive and rebuild it constantly.
 function renderLogs() {
   if (state.windowHidden) return;
-  elements.logList.replaceChildren();
+  const list = elements.logList;
+  if (list.closest(".panel")?.classList.contains("hidden")) return;
+  list.replaceChildren();
   if (!state.logs.length) {
     const empty = document.createElement("div");
     empty.className = "log-empty";
     empty.textContent = t("logs.empty");
-    elements.logList.append(empty);
+    list.append(empty);
     return;
   }
-
   const fragment = document.createDocumentFragment();
-  for (const log of state.logs) {
-    const row = document.createElement("div");
-    row.className = "log-row";
-    const stream = document.createElement("span");
-    stream.className = `log-stream ${log.stream || "desk"}`;
-    stream.textContent = log.stream || "desk";
-    const message = document.createElement("span");
-    message.className = "log-message";
-    message.textContent = log.message || "";
-    row.append(stream, message);
-    fragment.append(row);
-  }
-  elements.logList.append(fragment);
-  elements.logList.scrollTop = elements.logList.scrollHeight;
+  for (const log of state.logs) fragment.append(createLogRow(log));
+  list.append(fragment);
+  list.scrollTop = list.scrollHeight;
+}
+
+// Incremental append used by the live harness-output event: one new row per
+// event instead of rebuilding the whole list, trimming overflow.
+function appendLogRow(log) {
+  if (state.windowHidden) return;
+  const list = elements.logList;
+  if (list.closest(".panel")?.classList.contains("hidden")) return;
+  if (list.querySelector(".log-empty")) list.replaceChildren();
+  list.append(createLogRow(log));
+  while (list.children.length > 500) list.firstChild?.remove();
+  list.scrollTop = list.scrollHeight;
 }
 
 function closePanels() {
@@ -662,6 +687,25 @@ function pauseStatusPolling() {
 function resumeStatusPolling() {
   if (state.statusInterval) return;
   state.statusInterval = window.setInterval(refreshStatus, 2500);
+}
+
+function scheduleUnfocusUnload() {
+  if (!state.memorySaverUnfocus) return;
+  if (state.unfocusTimer) clearTimeout(state.unfocusTimer);
+  state.unfocusTimer = window.setTimeout(() => {
+    state.unfocusTimer = null;
+    if (!state.windowFocused && !state.windowHidden) {
+      unloadHarnessFrame();
+      pauseStatusPolling();
+    }
+  }, UNFOCUS_UNLOAD_DELAY);
+}
+
+function cancelUnfocusUnload() {
+  if (state.unfocusTimer) {
+    clearTimeout(state.unfocusTimer);
+    state.unfocusTimer = null;
+  }
 }
 
 async function refreshStatus() {
@@ -908,6 +952,11 @@ function bindEvents() {
     state.memorySaver = enabled;
     localStorage.setItem("memorySaver", String(enabled));
   });
+  elements.memorySaverUnfocusToggle.addEventListener("change", () => {
+    state.memorySaverUnfocus = elements.memorySaverUnfocusToggle.checked;
+    localStorage.setItem("memorySaverUnfocus", String(state.memorySaverUnfocus));
+    if (!state.memorySaverUnfocus) cancelUnfocusUnload();
+  });
   elements.notifyEnabledToggle.addEventListener("change", () => {
     state.notifyEnabled = elements.notifyEnabledToggle.checked;
     localStorage.setItem("notifyEnabled", String(state.notifyEnabled));
@@ -947,7 +996,7 @@ async function listenForOutput() {
   await listen("harness-output", (event) => {
     state.logs.push(event.payload);
     if (state.logs.length > 500) state.logs.shift();
-    renderLogs();
+    appendLogRow(event.payload);
   });
   await listen("runtime-progress", (event) => {
     const progress = event.payload || {};
@@ -1004,11 +1053,25 @@ async function listenForOutput() {
   });
   await listen("window-hidden", () => {
     state.windowHidden = true;
+    state.windowFocused = false;
+    cancelUnfocusUnload();
     pauseStatusPolling();
     if (state.memorySaver) unloadHarnessFrame();
   });
   await listen("window-shown", () => {
     state.windowHidden = false;
+    state.windowFocused = true;
+    resumeStatusPolling();
+    restoreHarnessFrame();
+    renderLogs();
+  });
+  await listen("window-unfocused", () => {
+    state.windowFocused = false;
+    scheduleUnfocusUnload();
+  });
+  await listen("window-focused", () => {
+    state.windowFocused = true;
+    cancelUnfocusUnload();
     resumeStatusPolling();
     restoreHarnessFrame();
     renderLogs();
@@ -1026,6 +1089,7 @@ async function initialize() {
   elements.autoInstallDshToggle.checked = localStorage.getItem("autoInstallHarnessUpdates") !== "false";
   elements.autoCheckInterval.value = localStorage.getItem("autoCheckInterval") || "hourly";
   elements.memorySaverToggle.checked = state.memorySaver;
+  elements.memorySaverUnfocusToggle.checked = state.memorySaverUnfocus;
   elements.notifyEnabledToggle.checked = state.notifyEnabled;
   elements.notifyTaskToggle.checked = state.notifyTask;
   elements.notifyInteractionToggle.checked = state.notifyInteraction;
