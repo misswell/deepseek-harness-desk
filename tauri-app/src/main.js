@@ -4,6 +4,13 @@ import {
   clampZoom,
   zoomFromShortcut,
 } from "./zoom.js";
+import {
+  LANG_PREF_STORAGE_KEY,
+  applyStaticTranslations,
+  resolveLanguage,
+  storedLanguagePreference,
+  translate,
+} from "./i18n.js";
 
 const tauri = window.__TAURI__;
 const invoke = tauri?.core?.invoke;
@@ -44,6 +51,7 @@ const elements = {
   launchAtLoginToggle: document.querySelector("#launch-at-login-toggle"),
   restoreLastWindowToggle: document.querySelector("#restore-last-window-toggle"),
   dockIconToggle: document.querySelector("#dock-icon-toggle"),
+  languageSelect: document.querySelector("#language-select"),
   appCurrentVersion: document.querySelector("#app-current-version"),
   appLatestVersion: document.querySelector("#app-latest-version"),
   appUpdateStatus: document.querySelector("#app-update-status"),
@@ -116,6 +124,14 @@ const state = {
   notifyInteraction: localStorage.getItem("notifyInteraction") !== "false",
 };
 
+// --- Internationalization ---
+let lang = resolveLanguage(storedLanguagePreference());
+let langPref = storedLanguagePreference();
+
+function t(key, vars) {
+  return translate(key, lang, vars);
+}
+
 const UPDATE_INTERVALS = {
   hourly: 60 * 60 * 1000,
   daily: 24 * 60 * 60 * 1000,
@@ -128,12 +144,12 @@ function errorMessage(error) {
   try {
     return JSON.stringify(error);
   } catch {
-    return "未知错误";
+    return t("common.unknown");
   }
 }
 
 async function call(command, args) {
-  if (!invoke) throw new Error("当前页面不是 Tauri 应用窗口");
+  if (!invoke) throw new Error(t("error.notTauri"));
   return invoke(command, args);
 }
 
@@ -169,7 +185,7 @@ async function applyZoom(zoom, { persist = true, announce = false } = {}) {
     document.documentElement.style.zoom = String(nextZoom);
   }
 
-  if (announce) setToast(`界面缩放：${Math.round(nextZoom * 100)}%`);
+  if (announce) setToast(t("toast.zoom", { percent: `${Math.round(nextZoom * 100)}%` }));
   return nextZoom;
 }
 
@@ -212,9 +228,11 @@ function renderUpdateProgress({ title, message, fraction, done = false, error = 
     : current;
   const percent = Math.round(value * 100);
   elements.updateProgressCard.classList.remove("hidden");
-  elements.updateProgressTitle.textContent = error ? "更新失败" : title || "正在更新…";
-  elements.updateProgressMessage.textContent = error || message || "准备中…";
-  elements.updateProgressPercent.textContent = error ? "失败" : `${percent}%`;
+  elements.updateProgressTitle.textContent = error
+    ? t("update.progress.failedTitle")
+    : title || t("update.progress.updating");
+  elements.updateProgressMessage.textContent = error || message || t("update.progress.preparing");
+  elements.updateProgressPercent.textContent = error ? t("update.progress.failed") : `${percent}%`;
   elements.updateProgressBar.value = value;
   elements.updateProgressBar.setAttribute("aria-valuenow", String(percent));
 
@@ -231,12 +249,12 @@ function setBusy(busy) {
   if (!busy) state.busyOperation = null;
   const running = state.status?.running === true;
   const busyLabel = state.busyOperation === "dsh-update"
-    ? "更新中…"
+    ? t("common.updating")
     : state.busyOperation === "runtime-install"
-      ? "安装中…"
+      ? t("common.installing")
       : state.busyOperation === "stop"
-        ? "停止中…"
-        : "启动中…";
+        ? t("common.stopping")
+        : t("common.starting");
   elements.startButton.disabled = busy || running;
   elements.retryButton.disabled = busy || running;
   elements.runtimeInstallButton.disabled = busy || state.runtime?.installing === true;
@@ -246,32 +264,36 @@ function setBusy(busy) {
   elements.checkAppUpdateButton.disabled = busy;
   elements.checkDshUpdateButton.disabled = busy || state.runtime?.available !== true;
   elements.installDshUpdateButton.disabled = busy;
-  elements.startButton.textContent = busy ? busyLabel : running ? "已启动" : "启动 Harness";
-  elements.retryButton.textContent = busy ? busyLabel : "重新启动";
+  elements.startButton.textContent = busy ? busyLabel : running ? t("common.started") : t("common.start");
+  elements.retryButton.textContent = busy ? busyLabel : t("common.restart");
 }
 
 function phaseCopy() {
   if (state.busyOperation === "dsh-update") {
     return {
-      label: "更新中",
-      title: "正在更新内置 dsh…",
-      message: "更新期间会暂时停止 Harness，完成后自动恢复。",
+      label: t("common.updating"),
+      title: t("update.dsh.title"),
+      message: t("phase.dshUpdate.message"),
     };
   }
   if (state.phase === "starting") {
     return {
-      label: "启动中",
-      title: "正在启动 DeepSeek Harness…",
-      message: "正在准备本机运行环境，请稍候。",
+      label: t("common.starting"),
+      title: t("startup.title.starting"),
+      message: t("startup.message.preparing"),
     };
   }
   if (state.phase === "running") {
-    return { label: "运行中", title: "Harness 已启动", message: "" };
+    return { label: t("common.running"), title: t("startup.title.running"), message: "" };
   }
   if (state.phase === "error") {
-    return { label: "启动失败", title: "DeepSeek Harness 无法启动", message: "" };
+    return { label: t("common.failed"), title: t("startup.title.failed"), message: "" };
   }
-  return { label: "已停止", title: "DeepSeek Harness 已停止", message: "点击启动按钮重新打开 Harness。" };
+  return {
+    label: t("common.stopped"),
+    title: t("startup.title.stopped"),
+    message: t("startup.message.stopped"),
+  };
 }
 
 function renderRuntime() {
@@ -279,22 +301,24 @@ function renderRuntime() {
   if (!runtime) return;
 
   const label = runtime.installing
-    ? "安装中…"
+    ? t("common.installing")
     : runtime.available
-      ? "内置 Node + dsh"
-      : "待安装";
+      ? t("runtime.builtin")
+      : t("runtime.installPending");
   elements.runtimeStatus.textContent = label;
   elements.runtimeStatus.classList.toggle("available", runtime.available && !runtime.installing);
   elements.runtimeStatus.classList.toggle("missing", !runtime.available && !runtime.installing);
   elements.settingsRuntimePath.textContent =
-    runtime.runtime_root || runtime.path || runtime.message || "首次启动会自动安装 Node.js 和 dsh。";
+    runtime.runtime_root || runtime.path || runtime.message || t("runtime.pathDefault");
   elements.settingsLogDirectory.textContent = runtime.logs_directory || "—";
   elements.runtimeInstallStatus.textContent =
-    runtime.message || (runtime.available ? "运行时已就绪。" : "点击安装，应用会自动准备运行环境。");
+    runtime.message || (runtime.available ? t("runtime.ready") : t("runtime.installHint"));
   elements.runtimeInstallButton.classList.toggle("hidden", runtime.available && !runtime.installing);
-  elements.runtimeInstallButton.textContent = runtime.installing ? "安装中…" : "安装运行时";
+  elements.runtimeInstallButton.textContent = runtime.installing
+    ? t("runtime.installButtonBusy")
+    : t("runtime.installButton");
   elements.runtimeInstallStatus.classList.toggle("active", runtime.installing);
-  elements.dshCurrentVersion.textContent = runtime.version || (runtime.available ? "系统 PATH" : "未安装");
+  elements.dshCurrentVersion.textContent = runtime.version || (runtime.available ? t("common.sysPath") : t("common.notInstalled"));
   elements.settingsHarnessVersion.textContent = runtime.version || "—";
   setBusy(state.busy);
 }
@@ -315,32 +339,32 @@ function renderSettingsTab() {
 function renderAppUpdate() {
   const update = state.appUpdate;
   if (!update) {
-    elements.appCurrentVersion.textContent = "检查中…";
-    elements.appLatestVersion.textContent = "未检查";
-    elements.appUpdateStatus.textContent = "未检查";
-    elements.aboutVersion.textContent = "版本检查中…";
+    elements.appCurrentVersion.textContent = t("common.checking");
+    elements.appLatestVersion.textContent = t("common.notChecked");
+    elements.appUpdateStatus.textContent = t("common.notChecked");
+    elements.aboutVersion.textContent = t("about.version");
     return;
   }
   elements.appCurrentVersion.textContent = update.current_version || "—";
-  elements.appLatestVersion.textContent = update.latest_version || "未检查";
-  elements.appUpdateStatus.textContent = update.status || "未检查";
-  elements.aboutVersion.textContent = `版本 ${update.current_version || "—"}`;
+  elements.appLatestVersion.textContent = update.latest_version || t("common.notChecked");
+  elements.appUpdateStatus.textContent = update.status || t("common.notChecked");
+  elements.aboutVersion.textContent = t("about.versionLabel", { version: update.current_version || "—" });
   const available = update.available === true;
   const ignored = localStorage.getItem("ignoredAppUpdateVersion") === update.latest_version;
   elements.installAppUpdateButton.classList.toggle("hidden", !available);
   elements.openReleasePageButton.classList.toggle("hidden", !update.release_url);
   elements.appUpdateBanner.classList.toggle("hidden", !available || ignored);
   if (available && !ignored) {
-    elements.appUpdateBannerText.textContent = `发现新版本 ${update.latest_version}`;
+    elements.appUpdateBannerText.textContent = t("update.bannerWith", { version: update.latest_version });
   }
 }
 
 function renderDshUpdate() {
   const update = state.dshUpdate;
   if (!update) return;
-  elements.dshCurrentVersion.textContent = update.current_version || (state.runtime?.version || "未安装");
-  elements.dshLatestVersion.textContent = update.latest_version || "未检查";
-  elements.dshUpdateStatus.textContent = update.status || "未检查";
+  elements.dshCurrentVersion.textContent = update.current_version || (state.runtime?.version || t("common.notInstalled"));
+  elements.dshLatestVersion.textContent = update.latest_version || t("common.notChecked");
+  elements.dshUpdateStatus.textContent = update.status || t("common.notChecked");
   elements.installDshUpdateButton.classList.toggle("hidden", update.available !== true);
   elements.installDshUpdateButton.disabled = update.available !== true || state.busy;
 }
@@ -361,30 +385,30 @@ function renderStatus() {
     elements.startupMessage.textContent = copy.message;
   }
   elements.harnessStatus.textContent = updatingDsh
-    ? "更新中…"
+    ? t("common.updating")
     : running
-      ? "运行中"
+      ? t("common.running")
       : state.phase === "error"
-        ? "启动失败"
+        ? t("common.failed")
         : state.phase === "starting"
-          ? "启动中…"
-          : "已停止";
+          ? t("common.starting")
+          : t("common.stopped");
   elements.harnessStatus.classList.toggle("available", running);
   elements.harnessStatus.classList.toggle("missing", failed);
   elements.portStatus.textContent = state.status?.port ? String(state.status.port) : "—";
   elements.settingsHarnessStatus.textContent = updatingDsh
-    ? "更新中…"
+    ? t("common.updating")
     : running
-      ? "运行中"
+      ? t("common.running")
       : failed
-        ? "启动失败"
+        ? t("common.failed")
         : state.phase === "starting"
-          ? "启动中…"
-          : "已停止";
+          ? t("common.starting")
+          : t("common.stopped");
   elements.settingsHarnessPid.textContent = state.status?.pid ? String(state.status.pid) : "—";
   elements.settingsHarnessPort.textContent = state.status?.port ? String(state.status.port) : "—";
   elements.settingsHarnessPath.textContent = state.status?.dsh_path || "—";
-  elements.errorMessage.textContent = state.status?.error || "发生未知错误，请查看运行日志。";
+  elements.errorMessage.textContent = state.status?.error || t("error.unexpected");
   elements.frameContainer.classList.toggle("hidden", !running);
 
   if (running && state.status?.url && state.frameUrl !== state.status.url) {
@@ -395,7 +419,7 @@ function renderStatus() {
       return;
     }
     state.frameUrl = state.status.url;
-    elements.frameLoading.textContent = "正在加载 Harness 页面…";
+    elements.frameLoading.textContent = t("frame.loading");
     elements.frameLoading.classList.remove("hidden");
     elements.frame.src = state.status.url;
   }
@@ -410,7 +434,7 @@ function renderLogs() {
   if (!state.logs.length) {
     const empty = document.createElement("div");
     empty.className = "log-empty";
-    empty.textContent = "暂无日志输出";
+    empty.textContent = t("logs.empty");
     elements.logList.append(empty);
     return;
   }
@@ -443,12 +467,25 @@ function showPanel(panel) {
   if (panel === elements.settingsPanel) renderSettingsTab();
 }
 
+async function setLanguage(pref) {
+  langPref = pref;
+  localStorage.setItem(LANG_PREF_STORAGE_KEY, pref);
+  lang = resolveLanguage(pref);
+  document.documentElement.lang = lang === "zh" ? "zh-CN" : "en";
+  applyStaticTranslations(document, lang);
+  renderSettingsTab();
+  renderStatus();
+  renderRuntime();
+  renderLogs();
+  await call("set_language", { language: lang }).catch(() => {});
+}
+
 async function refreshRuntime() {
   try {
     state.runtime = await call("runtime_status");
     renderRuntime();
   } catch (error) {
-    elements.runtimeStatus.textContent = "无法检查";
+    elements.runtimeStatus.textContent = t("runtime.unavailable");
     elements.settingsRuntimePath.textContent = errorMessage(error);
   }
 }
@@ -457,17 +494,17 @@ async function checkAppUpdate(interactive = true) {
   if (state.updateChecking) return state.appUpdate;
   state.updateChecking = true;
   elements.checkAppUpdateButton.disabled = true;
-  elements.appUpdateStatus.textContent = "正在检查更新…";
+  elements.appUpdateStatus.textContent = t("update.checking");
   try {
     state.appUpdate = await call("check_app_update");
     renderAppUpdate();
     if (state.appUpdate.available) {
       if (interactive) {
         showUpdatesPanel();
-        setToast(`发现 App 新版本 ${state.appUpdate.latest_version}`);
+        setToast(t("toast.appNewVersion", { version: state.appUpdate.latest_version }));
       }
     } else if (interactive) {
-      setToast(state.appUpdate.status || "已是最新版本");
+      setToast(state.appUpdate.status || t("toast.appUpToDate"));
     }
     return state.appUpdate;
   } catch (error) {
@@ -485,8 +522,8 @@ async function installAppUpdate() {
   showUpdatesPanel();
   state.updateKind = "app";
   renderUpdateProgress({
-    title: "正在更新 App…",
-    message: "准备下载更新包…",
+    title: t("update.app.title"),
+    message: t("update.app.preparing"),
     fraction: 0.01,
   });
   state.updateChecking = true;
@@ -499,7 +536,7 @@ async function installAppUpdate() {
   } catch (error) {
     const message = errorMessage(error);
     renderUpdateProgress({
-      title: "App 更新失败",
+      title: t("update.app.failed"),
       message,
       error: message,
       done: true,
@@ -516,7 +553,7 @@ async function checkDshUpdate(automaticallyInstall = false, interactive = true) 
   if (state.updateChecking) return state.dshUpdate;
   state.updateChecking = true;
   elements.checkDshUpdateButton.disabled = true;
-  elements.dshUpdateStatus.textContent = "正在检查更新…";
+  elements.dshUpdateStatus.textContent = t("update.checking");
   try {
     state.dshUpdate = await call("check_dsh_update");
     renderDshUpdate();
@@ -524,7 +561,7 @@ async function checkDshUpdate(automaticallyInstall = false, interactive = true) 
       await installDshUpdate(true);
     } else if (interactive) {
       showUpdatesPanel();
-      setToast(state.dshUpdate.status || "内置 dsh 已是最新版本");
+      setToast(state.dshUpdate.status || t("toast.appUpToDate"));
     }
     return state.dshUpdate;
   } catch (error) {
@@ -544,8 +581,8 @@ async function installDshUpdate(automatically = false) {
   state.updateKind = "dsh";
   state.busyOperation = "dsh-update";
   renderUpdateProgress({
-    title: "正在更新内置 dsh…",
-    message: `准备安装 ${version}…`,
+    title: t("update.dsh.title"),
+    message: t("update.dsh.preparing", { version }),
     fraction: 0.02,
   });
   state.busy = true;
@@ -556,13 +593,15 @@ async function installDshUpdate(automatically = false) {
       ...(state.dshUpdate || {}),
       current_version: state.runtime.version,
       available: false,
-      status: `内置 dsh 更新完成：${state.runtime.version || version}`,
+      status: t("update.dsh.done", { version: state.runtime.version || version }),
     };
-    setToast(automatically ? `内置 dsh 已自动更新到 ${version}` : `内置 dsh 已更新到 ${version}`);
+    setToast(automatically
+      ? t("update.dsh.autoToast", { version })
+      : t("update.dsh.toast", { version }));
   } catch (error) {
     const message = errorMessage(error);
     renderUpdateProgress({
-      title: "内置 dsh 更新失败",
+      title: t("update.dsh.failed"),
       message,
       error: message,
       done: true,
@@ -664,9 +703,9 @@ async function startHarness() {
       renderRuntime();
     }
     state.status = await call("start_harness");
-    if (!state.status.running) throw new Error(state.status.error || "Harness 未能启动。");
+    if (!state.status.running) throw new Error(state.status.error || t("startup.failedToStart"));
     state.phase = "running";
-    setToast("Harness 已启动");
+    setToast(t("toast.harnessStarted"));
   } catch (error) {
     state.status = { running: false, error: errorMessage(error) };
     state.phase = "error";
@@ -687,9 +726,9 @@ async function restartHarness() {
   renderStatus();
   try {
     state.status = await call("restart_harness");
-    if (!state.status.running) throw new Error(state.status.error || "Harness 未能启动。");
+    if (!state.status.running) throw new Error(state.status.error || t("startup.failedToStart"));
     state.phase = "running";
-    setToast("Harness 已重启");
+    setToast(t("toast.harnessRestarted"));
   } catch (error) {
     state.status = { running: false, error: errorMessage(error) };
     state.phase = "error";
@@ -710,7 +749,7 @@ async function stopHarness() {
     state.phase = "idle";
     state.frameUrl = "";
     elements.frame.removeAttribute("src");
-    setToast("Harness 已停止");
+    setToast(t("toast.harnessStopped"));
   } catch (error) {
     setToast(errorMessage(error), true);
   } finally {
@@ -728,7 +767,7 @@ async function installRuntime() {
   renderRuntime();
   try {
     state.runtime = await call("install_runtime");
-    setToast("运行时安装完成");
+    setToast(t("toast.runtimeInstalled"));
   } catch (error) {
     if (state.runtime) {
       state.runtime.installing = false;
@@ -747,7 +786,7 @@ async function toggleDockIcon() {
   localStorage.setItem("showDockIcon", String(visible));
   try {
     await call("set_dock_visibility", { visible });
-    setToast(visible ? "Dock 图标已开启" : "Dock 图标已关闭，可从菜单栏图标唤醒");
+    setToast(visible ? t("toast.dockOn") : t("toast.dockOff"));
   } catch (error) {
     setToast(errorMessage(error), true);
   }
@@ -758,7 +797,7 @@ async function toggleLaunchAtLogin() {
   localStorage.setItem("launchAtLogin", String(enabled));
   try {
     await call("set_launch_at_login", { enabled });
-    setToast(enabled ? "已开启登录时启动" : "已关闭登录时启动");
+    setToast(enabled ? t("toast.launchOn") : t("toast.launchOff"));
   } catch (error) {
     elements.launchAtLoginToggle.checked = !enabled;
     setToast(errorMessage(error), true);
@@ -826,6 +865,9 @@ function bindEvents() {
   elements.launchAtLoginToggle.addEventListener("change", toggleLaunchAtLogin);
   elements.restoreLastWindowToggle.addEventListener("change", toggleRestoreLastWindow);
   elements.dockIconToggle.addEventListener("change", toggleDockIcon);
+  elements.languageSelect.addEventListener("change", () => {
+    void setLanguage(elements.languageSelect.value);
+  });
   elements.checkAppUpdateButton.addEventListener("click", () => checkAppUpdate(true));
   elements.installAppUpdateButton.addEventListener("click", () => installAppUpdate());
   elements.appUpdateBannerInstall.addEventListener("click", () => installAppUpdate());
@@ -895,10 +937,9 @@ function bindEvents() {
     bindFrameZoomShortcuts();
   });
   elements.frame.addEventListener("error", () => {
-    elements.frameLoading.textContent = "Harness 页面加载失败，请查看运行日志。";
+    elements.frameLoading.textContent = t("frame.failed");
     elements.frameLoading.classList.remove("hidden");
   });
-
 }
 
 async function listenForOutput() {
@@ -922,7 +963,7 @@ async function listenForOutput() {
     }
     if (state.updateKind === "dsh") {
       renderUpdateProgress({
-        title: progress.error ? "内置 dsh 更新失败" : "正在更新内置 dsh…",
+        title: progress.error ? t("update.dsh.failed") : t("update.dsh.title"),
         message: progress.message,
         fraction: progress.fraction,
         done: progress.done === true,
@@ -946,7 +987,7 @@ async function listenForOutput() {
   await listen("update-progress", (event) => {
     const progress = event.payload || {};
     renderUpdateProgress({
-      title: "正在更新 App…",
+      title: t("update.app.title"),
       message: progress.message,
       fraction: progress.fraction,
       done: progress.done === true,
@@ -988,6 +1029,9 @@ async function initialize() {
   elements.notifyEnabledToggle.checked = state.notifyEnabled;
   elements.notifyTaskToggle.checked = state.notifyTask;
   elements.notifyInteractionToggle.checked = state.notifyInteraction;
+  elements.languageSelect.value = langPref;
+  document.documentElement.lang = lang === "zh" ? "zh-CN" : "en";
+  applyStaticTranslations(document, lang);
   bindEvents();
   renderSettingsTab();
   renderStatus();
@@ -995,6 +1039,7 @@ async function initialize() {
   await listenForOutput();
   await Promise.all([refreshStatus(), refreshRuntime(), loadLogs()]);
   await syncNotificationPrefs();
+  await call("set_language", { language: lang }).catch(() => {});
 
   if (state.status?.running) {
     state.phase = "running";

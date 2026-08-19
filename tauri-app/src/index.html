@@ -12,7 +12,7 @@
     <main class="app-shell">
       <section class="harness-surface" aria-label="DeepSeek Harness">
         <div class="frame-container hidden" id="frame-container">
-          <div class="frame-loading" id="frame-loading">正在加载 Harness 页面…</div>
+          <div class="frame-loading" id="frame-loading" data-i18n="frame.loading">正在加载 Harness 页面…</div>
           <iframe
             id="harness-frame"
             title="DeepSeek Harness Web UI"
@@ -24,25 +24,25 @@
           <div class="startup-card">
             <div class="brand-mark" aria-hidden="true">H</div>
             <div class="spinner" id="startup-spinner" aria-hidden="true"></div>
-            <h1 id="startup-title">正在启动 DeepSeek Harness…</h1>
-            <p id="startup-message">正在准备本机运行环境，请稍候。</p>
+            <h1 id="startup-title" data-i18n="startup.title.starting">正在启动 DeepSeek Harness…</h1>
+            <p id="startup-message" data-i18n="startup.message.preparing">正在准备本机运行环境，请稍候。</p>
             <div class="startup-status">
               <div class="status-row">
-                <span>Runtime</span>
-                <strong id="runtime-status">检查中…</strong>
+                <span data-i18n="startup.runtime">Runtime</span>
+                <strong id="runtime-status" data-i18n="common.checking">检查中…</strong>
               </div>
               <div class="status-row">
-                <span>Harness</span>
-                <strong id="harness-status">启动中…</strong>
+                <span data-i18n="startup.harness">Harness</span>
+                <strong id="harness-status" data-i18n="common.starting">启动中…</strong>
               </div>
               <div class="status-row">
-                <span>Port</span>
+                <span data-i18n="startup.port">Port</span>
                 <strong id="port-status">—</strong>
               </div>
             </div>
             <div class="startup-actions">
-              <button class="primary-button" id="start-button">重新启动</button>
-              <button class="secondary-button" id="startup-logs-button">查看日志</button>
+              <button class="primary-button" id="start-button" data-i18n="common.restart">重新启动</button>
+              <button class="secondary-button" id="startup-logs-button" data-i18n="common.viewLogs">查看日志</button>
             </div>
           </div>
         </section>
@@ -50,11 +50,11 @@
         <section class="error-view hidden" id="error-view" aria-live="assertive">
           <div class="startup-card error-card">
             <div class="error-mark" aria-hidden="true">!</div>
-            <h1>DeepSeek Harness 无法启动</h1>
-            <p id="error-message">发生未知错误。</p>
+            <h1 data-i18n="startup.title.failed">DeepSeek Harness 无法启动</h1>
+            <p id="error-message" data-i18n="startup.error">发生未知错误。</p>
             <div class="startup-actions">
-              <button class="primary-button" id="retry-button">重新启动</button>
-              <button class="secondary-button" id="error-logs-button">查看日志</button>
+              <button class="primary-button" id="retry-button" data-i18n="common.restart">重新启动</button>
+              <button class="secondary-button" id="error-logs-button" data-i18n="common.viewLogs">查看日志</button>
             </div>
           </div>
         </section>
@@ -64,56 +64,56 @@
         <div class="update-banner-icon" aria-hidden="true">↓</div>
         <div class="update-banner-copy">
           <strong>DeepSeek Harness Desk</strong>
-          <span id="app-update-banner-text">发现新版本</span>
+          <span id="app-update-banner-text" data-i18n="update.banner">发现新版本</span>
         </div>
-        <button class="primary-button compact-button" id="app-update-banner-install">更新</button>
-        <button class="icon-button compact-icon-button" id="app-update-banner-ignore" title="忽略此版本">⌁</button>
-        <button class="icon-button compact-icon-button" id="app-update-banner-dismiss" title="关闭提醒">×</button>
+        <button class="primary-button compact-button" id="app-update-banner-install" data-i18n="update.install">更新</button>
+        <button class="icon-button compact-icon-button" id="app-update-banner-ignore" title="忽略此版本" data-i18n-title="update.ignoreTitle">⌁</button>
+        <button class="icon-button compact-icon-button" id="app-update-banner-dismiss" title="关闭提醒" data-i18n-title="update.dismissTitle">×</button>
       </section>
 
-      <section class="panel hidden" id="logs-panel" aria-label="运行日志">
+      <section class="panel hidden" id="logs-panel" aria-label="运行日志" data-i18n-aria-label="logs.title">
         <div class="panel-heading">
           <div>
             <span class="panel-kicker">PROCESS OUTPUT</span>
-            <h2>运行日志</h2>
+            <h2 data-i18n="logs.title">运行日志</h2>
           </div>
           <div class="panel-actions">
-            <button class="toolbar-button" id="clear-logs-button">清空</button>
-            <button class="icon-button" id="close-logs-button" title="关闭日志">×</button>
+            <button class="toolbar-button" id="clear-logs-button" data-i18n="logs.clear">清空</button>
+            <button class="icon-button" id="close-logs-button" title="关闭日志" data-i18n-title="logs.closeTitle">×</button>
           </div>
         </div>
         <div class="log-list" id="log-list"></div>
       </section>
 
-      <section class="panel settings-panel hidden" id="settings-panel" aria-label="设置">
+      <section class="panel settings-panel hidden" id="settings-panel" aria-label="设置" data-i18n-aria-label="settings.title">
         <div class="panel-heading">
           <div>
             <span class="panel-kicker">PREFERENCES</span>
-            <h2>设置</h2>
+            <h2 data-i18n="settings.title">设置</h2>
           </div>
-          <button class="icon-button" id="close-settings-button" title="关闭设置">×</button>
+          <button class="icon-button" id="close-settings-button" title="关闭设置" data-i18n-title="settings.closeTitle">×</button>
         </div>
         <div class="settings-layout">
-          <nav class="settings-tabs" aria-label="设置分类" role="tablist">
+          <nav class="settings-tabs" aria-label="设置分类" role="tablist" data-i18n-aria-label="settings.category">
             <button class="settings-tab active" data-settings-tab="general" role="tab" aria-selected="true">
               <svg class="settings-tab-glyph" viewBox="0 0 20 20" aria-hidden="true" focusable="false">
                 <circle cx="10" cy="10" r="3.1"></circle>
                 <path d="M10 2.7v2M10 15.3v2M17.3 10h-2M4.7 10h-2M15.15 4.85l-1.4 1.4M6.25 13.75l-1.4 1.4M15.15 15.15l-1.4-1.4M6.25 6.25l-1.4-1.4"></path>
               </svg>
-              <span>通用</span>
+              <span data-i18n="tabs.general">通用</span>
             </button>
             <button class="settings-tab" data-settings-tab="updates" role="tab" aria-selected="false">
               <svg class="settings-tab-glyph" viewBox="0 0 20 20" aria-hidden="true" focusable="false">
                 <path d="M15.9 7.2A6.4 6.4 0 0 0 4.4 5.1L3 6.5M3 3.6v2.9h2.9M4.1 12.8a6.4 6.4 0 0 0 11.5 2.1l1.4-1.4M17 16.4v-2.9h-2.9"></path>
               </svg>
-              <span>更新</span>
+              <span data-i18n="tabs.updates">更新</span>
             </button>
             <button class="settings-tab" data-settings-tab="harness" role="tab" aria-selected="false">
               <svg class="settings-tab-glyph" viewBox="0 0 20 20" aria-hidden="true" focusable="false">
                 <rect x="3.2" y="3.2" width="13.6" height="13.6" rx="2.2"></rect>
                 <path d="m8 7.4 4.7 2.6L8 12.6V7.4Z"></path>
               </svg>
-              <span>Harness</span>
+              <span data-i18n="tabs.harness">Harness</span>
             </button>
             <button class="settings-tab" data-settings-tab="advanced" role="tab" aria-selected="false">
               <svg class="settings-tab-glyph" viewBox="0 0 20 20" aria-hidden="true" focusable="false">
@@ -122,45 +122,56 @@
                 <circle cx="13" cy="10" r="1.5"></circle>
                 <circle cx="8.8" cy="14.8" r="1.5"></circle>
               </svg>
-              <span>高级</span>
+              <span data-i18n="tabs.advanced">高级</span>
             </button>
             <button class="settings-tab" data-settings-tab="about" role="tab" aria-selected="false">
               <svg class="settings-tab-glyph" viewBox="0 0 20 20" aria-hidden="true" focusable="false">
                 <circle cx="10" cy="10" r="7"></circle>
                 <path d="M10 9.1v4.2M10 6.5h.01"></path>
               </svg>
-              <span>关于</span>
+              <span data-i18n="tabs.about">关于</span>
             </button>
           </nav>
 
           <div class="settings-pages">
             <section class="settings-page" data-settings-page="general" role="tabpanel">
               <div class="settings-list">
-                <div class="settings-section-heading">启动与窗口</div>
+                <div class="settings-section-heading" data-i18n="general.section.startup">启动与窗口</div>
                 <div class="settings-group">
                   <label class="setting-row">
                     <span>
-                      <strong>登录时启动</strong>
-                      <small>登录 macOS、Windows 或 Linux 桌面后自动启动应用。</small>
+                      <strong data-i18n="general.launchAtLogin">登录时启动</strong>
+                      <small data-i18n="general.launchAtLoginDesc">登录 macOS、Windows 或 Linux 桌面后自动启动应用。</small>
                     </span>
                     <input type="checkbox" id="launch-at-login-toggle" />
                   </label>
                   <label class="setting-row">
                     <span>
-                      <strong>恢复上次窗口</strong>
-                      <small>应用启动或从菜单栏唤醒时恢复主窗口内容。</small>
+                      <strong data-i18n="general.restoreWindow">恢复上次窗口</strong>
+                      <small data-i18n="general.restoreWindowDesc">应用启动或从菜单栏唤醒时恢复主窗口内容。</small>
                     </span>
                     <input type="checkbox" id="restore-last-window-toggle" />
                   </label>
                   <label class="setting-row">
                     <span>
-                      <strong>在 Dock 中显示图标</strong>
-                      <small>关闭后应用仍在运行，可从菜单栏图标唤醒窗口。</small>
+                      <strong data-i18n="general.dockIcon">在 Dock 中显示图标</strong>
+                      <small data-i18n="general.dockIconDesc">关闭后应用仍在运行，可从菜单栏图标唤醒窗口。</small>
                     </span>
                     <input type="checkbox" id="dock-icon-toggle" />
                   </label>
+                  <label class="setting-row">
+                    <span>
+                      <strong data-i18n="general.language">界面语言</strong>
+                      <small data-i18n="general.languageDesc">选择界面显示语言。</small>
+                    </span>
+                    <select id="language-select">
+                      <option value="auto" data-i18n="lang.auto">跟随系统</option>
+                      <option value="zh" data-i18n="lang.zh">中文</option>
+                      <option value="en" data-i18n="lang.en">English</option>
+                    </select>
+                  </label>
                 </div>
-                <p class="setting-note">窗口关闭时应用会继续运行，托盘/菜单栏图标仍可打开主窗口。</p>
+                <p class="setting-note" data-i18n="general.note">窗口关闭时应用会继续运行，托盘/菜单栏图标仍可打开主窗口。</p>
               </div>
             </section>
 
@@ -168,92 +179,92 @@
               <div class="settings-list">
                 <div class="update-progress hidden" id="update-progress-card" role="status" aria-live="polite">
                   <div class="update-progress-heading">
-                    <strong id="update-progress-title">正在更新…</strong>
+                    <strong id="update-progress-title" data-i18n="update.progress.updating">正在更新…</strong>
                     <span id="update-progress-percent">0%</span>
                   </div>
-                  <span id="update-progress-message">准备中…</span>
-                  <progress id="update-progress-bar" max="1" value="0" aria-label="更新进度"></progress>
+                  <span id="update-progress-message" data-i18n="update.progress.preparing">准备中…</span>
+                  <progress id="update-progress-bar" max="1" value="0" aria-label="更新进度" data-i18n-aria-label="update.progress.label"></progress>
                 </div>
-                <div class="settings-section-heading">App 壳子</div>
+                <div class="settings-section-heading" data-i18n="updates.section.app">App 壳子</div>
                 <div class="settings-group">
                   <div class="setting-row stacked update-setting-row">
                     <div class="setting-info-grid">
-                      <span>当前版本<strong id="app-current-version">检查中…</strong></span>
-                      <span>最新版本<strong id="app-latest-version">未检查</strong></span>
-                      <span>状态<strong id="app-update-status">未检查</strong></span>
+                      <span><span data-i18n="updates.currentVersion">当前版本</span><strong id="app-current-version" data-i18n="common.checking">检查中…</strong></span>
+                      <span><span data-i18n="updates.latestVersion">最新版本</span><strong id="app-latest-version" data-i18n="common.notChecked">未检查</strong></span>
+                      <span><span data-i18n="updates.status">状态</span><strong id="app-update-status" data-i18n="common.notChecked">未检查</strong></span>
                     </div>
                     <div class="setting-actions">
-                      <button class="toolbar-button" id="check-app-update-button">检查 App 更新…</button>
-                      <button class="primary-button compact-button hidden" id="install-app-update-button">下载并安装</button>
-                      <button class="toolbar-button" id="open-releases-page-button">打开下载页</button>
-                      <button class="toolbar-button hidden" id="open-release-page-button">查看 Release</button>
+                      <button class="toolbar-button" id="check-app-update-button" data-i18n="updates.checkApp">检查 App 更新…</button>
+                      <button class="primary-button compact-button hidden" id="install-app-update-button" data-i18n="updates.installApp">下载并安装</button>
+                      <button class="toolbar-button" id="open-releases-page-button" data-i18n="updates.openDownloads">打开下载页</button>
+                      <button class="toolbar-button hidden" id="open-release-page-button" data-i18n="updates.viewRelease">查看 Release</button>
                     </div>
                   </div>
                   <label class="setting-row">
                     <span>
-                      <strong>自动检查 App 更新</strong>
-                      <small>后台静默检查，发现新版本后在主界面提示。</small>
+                      <strong data-i18n="updates.autoCheckApp">自动检查 App 更新</strong>
+                      <small data-i18n="updates.autoCheckAppDesc">后台静默检查，发现新版本后在主界面提示。</small>
                     </span>
                     <input type="checkbox" id="auto-check-app-toggle" />
                   </label>
                   <label class="setting-row">
-                    <span><strong>自动检查频率</strong></span>
+                    <span><strong data-i18n="updates.autoCheckInterval">自动检查频率</strong></span>
                     <select id="auto-check-interval">
-                      <option value="hourly">每小时</option>
-                      <option value="daily">每天</option>
-                      <option value="weekly">每周</option>
+                      <option value="hourly" data-i18n="updates.interval.hourly">每小时</option>
+                      <option value="daily" data-i18n="updates.interval.daily">每天</option>
+                      <option value="weekly" data-i18n="updates.interval.weekly">每周</option>
                     </select>
                   </label>
                 </div>
-                <p class="setting-note">自动更新不可用或安装失败时，可点击“打开下载页”前往 GitHub Releases 手动下载安装包。</p>
+                <p class="setting-note" data-i18n="updates.note">自动更新不可用或安装失败时，可点击“打开下载页”前往 GitHub Releases 手动下载安装包。</p>
 
-                <div class="settings-section-heading">内置 DeepSeek Harness / dsh</div>
+                <div class="settings-section-heading" data-i18n="updates.section.dsh">内置 DeepSeek Harness / dsh</div>
                 <div class="settings-group">
                   <div class="setting-row stacked update-setting-row">
                     <div class="setting-info-grid">
-                      <span>当前版本<strong id="dsh-current-version">未安装</strong></span>
-                      <span>最新版本<strong id="dsh-latest-version">未检查</strong></span>
-                      <span>状态<strong id="dsh-update-status">未检查</strong></span>
+                      <span><span data-i18n="updates.currentVersion">当前版本</span><strong id="dsh-current-version" data-i18n="common.notInstalled">未安装</strong></span>
+                      <span><span data-i18n="updates.latestVersion">最新版本</span><strong id="dsh-latest-version" data-i18n="common.notChecked">未检查</strong></span>
+                      <span><span data-i18n="updates.status">状态</span><strong id="dsh-update-status" data-i18n="common.notChecked">未检查</strong></span>
                     </div>
                     <div class="setting-actions">
-                      <button class="toolbar-button" id="check-dsh-update-button">检查内置 dsh 更新…</button>
-                      <button class="primary-button compact-button hidden" id="install-dsh-update-button">更新 dsh</button>
+                      <button class="toolbar-button" id="check-dsh-update-button" data-i18n="updates.checkDsh">检查内置 dsh 更新…</button>
+                      <button class="primary-button compact-button hidden" id="install-dsh-update-button" data-i18n="updates.updateDsh">更新 dsh</button>
                     </div>
                   </div>
                   <label class="setting-row">
-                    <span><strong>自动检查内置 dsh 更新</strong><small>启动后和后台定期检查 npm 最新版本。</small></span>
+                    <span><strong data-i18n="updates.autoCheckDsh">自动检查内置 dsh 更新</strong><small data-i18n="updates.autoCheckDshDesc">启动后和后台定期检查 npm 最新版本。</small></span>
                     <input type="checkbox" id="auto-check-dsh-toggle" />
                   </label>
                   <label class="setting-row">
-                    <span><strong>自动安装内置 dsh 更新</strong><small>发现新版后自动安装，并重启 Harness。</small></span>
+                    <span><strong data-i18n="updates.autoInstallDsh">自动安装内置 dsh 更新</strong><small data-i18n="updates.autoInstallDshDesc">发现新版后自动安装，并重启 Harness。</small></span>
                     <input type="checkbox" id="auto-install-dsh-toggle" />
                   </label>
                 </div>
-                <p class="setting-note">更新过程会保留当前版本；安装完成后自动切换到新版本。系统 PATH 中手动安装的 dsh 不会被修改。</p>
+                <p class="setting-note" data-i18n="updates.note2">更新过程会保留当前版本；安装完成后自动切换到新版本。系统 PATH 中手动安装的 dsh 不会被修改。</p>
               </div>
             </section>
 
             <section class="settings-page hidden" data-settings-page="harness" role="tabpanel">
               <div class="settings-list">
-                <div class="settings-section-heading">当前 Harness</div>
+                <div class="settings-section-heading" data-i18n="harness.section.current">当前 Harness</div>
                 <div class="settings-group">
                   <div class="setting-row stacked">
                     <div class="setting-info-grid">
-                      <span>状态<strong id="settings-harness-status">检查中…</strong></span>
-                      <span>版本<strong id="settings-harness-version">—</strong></span>
+                      <span><span data-i18n="harness.status">状态</span><strong id="settings-harness-status" data-i18n="common.checking">检查中…</strong></span>
+                      <span><span data-i18n="harness.version">版本</span><strong id="settings-harness-version">—</strong></span>
                       <span>PID<strong id="settings-harness-pid">—</strong></span>
-                      <span>端口<strong id="settings-harness-port">—</strong></span>
+                      <span><span data-i18n="harness.port">端口</span><strong id="settings-harness-port">—</strong></span>
                     </div>
                     <div class="setting-actions">
-                      <button class="primary-button compact-button" id="settings-start-harness-button">启动 Harness</button>
-                      <button class="toolbar-button" id="settings-restart-harness-button">重启 Harness</button>
-                      <button class="toolbar-button" id="settings-stop-harness-button">停止 Harness</button>
-                      <button class="toolbar-button" id="settings-open-logs-button">打开日志</button>
+                      <button class="primary-button compact-button" id="settings-start-harness-button" data-i18n="harness.start">启动 Harness</button>
+                      <button class="toolbar-button" id="settings-restart-harness-button" data-i18n="harness.restart">重启 Harness</button>
+                      <button class="toolbar-button" id="settings-stop-harness-button" data-i18n="harness.stop">停止 Harness</button>
+                      <button class="toolbar-button" id="settings-open-logs-button" data-i18n="harness.openLogs">打开日志</button>
                     </div>
                   </div>
                   <div class="setting-row stacked">
-                    <span><strong>运行程序</strong><small id="settings-harness-path">—</small></span>
-                    <button class="toolbar-button" id="settings-refresh-harness-button">刷新状态</button>
+                    <span><strong data-i18n="harness.executable">运行程序</strong><small id="settings-harness-path">—</small></span>
+                    <button class="toolbar-button" id="settings-refresh-harness-button" data-i18n="harness.refresh">刷新状态</button>
                   </div>
                 </div>
               </div>
@@ -261,61 +272,61 @@
 
             <section class="settings-page hidden" data-settings-page="advanced" role="tabpanel">
               <div class="settings-list">
-                <div class="settings-section-heading">运行环境</div>
+                <div class="settings-section-heading" data-i18n="advanced.section.runtime">运行环境</div>
                 <div class="settings-group">
                   <div class="setting-row stacked">
                     <span>
-                      <strong>Runtime 目录</strong>
-                      <small id="settings-runtime-path">检查中…</small>
+                      <strong data-i18n="advanced.runtimeDir">Runtime 目录</strong>
+                      <small id="settings-runtime-path" data-i18n="common.checking">检查中…</small>
                     </span>
                     <div class="setting-actions">
-                      <button class="toolbar-button hidden" id="runtime-install-button">安装运行时</button>
-                      <button class="toolbar-button" id="refresh-runtime-button">重新检查</button>
-                      <button class="toolbar-button" id="open-runtime-directory-button">打开目录</button>
+                      <button class="toolbar-button hidden" id="runtime-install-button" data-i18n="advanced.installRuntime">安装运行时</button>
+                      <button class="toolbar-button" id="refresh-runtime-button" data-i18n="advanced.recheck">重新检查</button>
+                      <button class="toolbar-button" id="open-runtime-directory-button" data-i18n="advanced.openDir">打开目录</button>
                     </div>
                   </div>
                   <div class="setting-row stacked">
-                    <span><strong>日志目录</strong><small id="settings-log-directory">—</small></span>
-                    <button class="toolbar-button" id="open-logs-directory-button">打开日志目录</button>
+                    <span><strong data-i18n="advanced.logsDir">日志目录</strong><small id="settings-log-directory">—</small></span>
+                    <button class="toolbar-button" id="open-logs-directory-button" data-i18n="advanced.openLogsDir">打开日志目录</button>
                   </div>
                 </div>
-                <p class="setting-note" id="runtime-install-status">首次启动会自动准备隔离的 Node.js 和 DeepSeek Harness，不依赖系统 Node.js 版本。</p>
-                <div class="settings-section-heading">内存与性能</div>
+                <p class="setting-note" id="runtime-install-status" data-i18n="advanced.runtimeNote">首次启动会自动准备隔离的 Node.js 和 DeepSeek Harness，不依赖系统 Node.js 版本。</p>
+                <div class="settings-section-heading" data-i18n="advanced.section.memory">内存与性能</div>
                 <div class="settings-group">
                   <label class="setting-row">
                     <span>
-                      <strong>窗口隐藏时释放 Harness 页面内存</strong>
-                      <small>关闭窗口到菜单栏/托盘时卸载 Harness 页面以释放内存；重新打开窗口时页面会重新加载，需要短暂等待。</small>
+                      <strong data-i18n="advanced.memorySaver">窗口隐藏时释放 Harness 页面内存</strong>
+                      <small data-i18n="advanced.memorySaverDesc">关闭窗口到菜单栏/托盘时卸载 Harness 页面以释放内存；重新打开窗口时页面会重新加载，需要短暂等待。</small>
                     </span>
                     <input type="checkbox" id="memory-saver-toggle" />
                   </label>
                 </div>
-                <p class="setting-note">释放的是渲染页面（WebView）占用的内存，Harness 后台服务会保持运行，重新打开窗口即可继续使用。</p>
-                <div class="settings-section-heading">通知提醒</div>
+                <p class="setting-note" data-i18n="advanced.memorySaverNote">释放的是渲染页面（WebView）占用的内存，Harness 后台服务会保持运行，重新打开窗口即可继续使用。</p>
+                <div class="settings-section-heading" data-i18n="advanced.section.notify">通知提醒</div>
                 <div class="settings-group">
                   <label class="setting-row">
                     <span>
-                      <strong>启用任务通知</strong>
-                      <small>任务完成或需要交互时，在应用图标上显示角标并发送系统通知。</small>
+                      <strong data-i18n="advanced.notifyEnabled">启用任务通知</strong>
+                      <small data-i18n="advanced.notifyEnabledDesc">任务完成或需要交互时，在应用图标上显示角标并发送系统通知。</small>
                     </span>
                     <input type="checkbox" id="notify-enabled-toggle" />
                   </label>
                   <label class="setting-row">
                     <span>
-                      <strong>任务完成时提醒</strong>
-                      <small>Harness 完成一项任务后通知你。</small>
+                      <strong data-i18n="advanced.notifyTask">任务完成时提醒</strong>
+                      <small data-i18n="advanced.notifyTaskDesc">Harness 完成一项任务后通知你。</small>
                     </span>
                     <input type="checkbox" id="notify-task-toggle" />
                   </label>
                   <label class="setting-row">
                     <span>
-                      <strong>需要交互时提醒</strong>
-                      <small>Harness 向你提问或请求批准时通知你。</small>
+                      <strong data-i18n="advanced.notifyInteraction">需要交互时提醒</strong>
+                      <small data-i18n="advanced.notifyInteractionDesc">Harness 向你提问或请求批准时通知你。</small>
                     </span>
                     <input type="checkbox" id="notify-interaction-toggle" />
                   </label>
                 </div>
-                <p class="setting-note">仅当窗口未处于聚焦状态时才会提醒，避免打扰正在使用的你；回到窗口后角标会自动清除。</p>
+                <p class="setting-note" data-i18n="advanced.notifyNote">仅当窗口未处于聚焦状态时才会提醒，避免打扰正在使用的你；回到窗口后角标会自动清除。</p>
               </div>
             </section>
 
@@ -323,9 +334,9 @@
               <div class="about-content">
                 <div class="about-mark" aria-hidden="true">H</div>
                 <h3>DeepSeek Harness Desk</h3>
-                <p>原生跨平台 DeepSeek Harness 桌面客户端</p>
-                <p class="about-disclaimer">DeepSeek Harness 由 DeepSeek AI 开发。DeepSeek Harness Desk 是独立的第三方项目，不隶属于 DeepSeek AI，也未获得其认可或赞助。</p>
-                <small id="about-version">版本检查中…</small>
+                <p data-i18n="about.tagline">原生跨平台 DeepSeek Harness 桌面客户端</p>
+                <p class="about-disclaimer" data-i18n="about.disclaimer">DeepSeek Harness 由 DeepSeek AI 开发。DeepSeek Harness Desk 是独立的第三方项目，不隶属于 DeepSeek AI，也未获得其认可或赞助。</p>
+                <small id="about-version" data-i18n="about.version">版本检查中…</small>
               </div>
             </section>
           </div>

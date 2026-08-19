@@ -110,6 +110,7 @@ struct HarnessState {
     notify_task_completed: Arc<AtomicBool>,
     notify_interaction: Arc<AtomicBool>,
     pending_attention: Arc<AtomicI64>,
+    language: Arc<Mutex<String>>,
 }
 
 #[derive(Serialize, Clone, Debug)]
@@ -2224,18 +2225,19 @@ fn handle_mux_frame(
                 .and_then(|items| items.first())
                 .and_then(|item| item.get("question"))
                 .and_then(|value| value.as_str())
-                .unwrap_or("Harness 正在等待你的回答");
+                .unwrap_or_default()
+                .to_string();
             let rpc_id = envelope.get("rpcId").and_then(|value| value.as_str()).unwrap_or("");
             let key = interaction_key(payload, rpc_id);
             if is_new_interaction(seen_interactions, &key) {
-                on_needs_interaction(app, state, "需要你的输入", body);
+                on_needs_interaction(app, state, "question", Some(body.as_str()));
             }
         }
         "approval/requested" => {
             let rpc_id = envelope.get("rpcId").and_then(|value| value.as_str()).unwrap_or("");
             let key = interaction_key(payload, rpc_id);
             if is_new_interaction(seen_interactions, &key) {
-                on_needs_interaction(app, state, "需要你的批准", "Harness 需要你的批准才能继续");
+                on_needs_interaction(app, state, "approval", None);
             }
         }
         _ => {}
@@ -2314,13 +2316,29 @@ fn raise_attention(app: &AppHandle, state: &HarnessState, title: &str, body: &st
     let _ = app.notification().builder().title(title).body(body).show();
 }
 
-fn on_needs_interaction(app: &AppHandle, state: &HarnessState, title: &str, body: &str) {
+/// The shell's chosen UI language ("zh" or "en"), synced from the frontend.
+fn current_language(state: &HarnessState) -> String {
+    state
+        .language
+        .lock()
+        .map(|language| language.clone())
+        .unwrap_or_else(|_| "zh".to_string())
+}
+
+fn on_needs_interaction(app: &AppHandle, state: &HarnessState, kind: &str, question: Option<&str>) {
     if !state.notify_enabled.load(Ordering::Acquire) || !state.notify_interaction.load(Ordering::Acquire) {
         return;
     }
     if window_is_focused(app) {
         return;
     }
+    let english = current_language(state) == "en";
+    let (title, body) = match (kind, english) {
+        ("question", true) => ("Needs your input", question.unwrap_or("Harness is waiting for your answer")),
+        ("question", false) => ("需要你的输入", question.unwrap_or("Harness 正在等待你的回答")),
+        ("approval", true) => ("Needs your approval", "Harness needs your approval to continue"),
+        _ => ("需要你的批准", "Harness 需要你的批准才能继续"),
+    };
     raise_attention(app, state, title, body);
 }
 
@@ -2331,12 +2349,20 @@ fn on_task_completed(app: &AppHandle, state: &HarnessState, session_id: &str) {
     if window_is_focused(app) {
         return;
     }
+    let english = current_language(state) == "en";
+    let title = if english { "Task completed" } else { "任务已完成" };
     let body = if session_id.is_empty() {
-        "Harness 已完成一项任务".to_string()
+        if english {
+            "The Harness finished a task".to_string()
+        } else {
+            "Harness 已完成一项任务".to_string()
+        }
+    } else if english {
+        format!("Session {session_id} finished its task")
     } else {
         format!("会话 {session_id} 已完成任务")
     };
-    raise_attention(app, state, "任务已完成", &body);
+    raise_attention(app, state, title, &body);
 }
 
 fn clear_badge<R: tauri::Runtime>(app: &AppHandle<R>, state: &HarnessState) {
@@ -2374,6 +2400,33 @@ fn notification_prefs(state: State<'_, HarnessState>) -> NotificationPrefsView {
         enabled: state.notify_enabled.load(Ordering::Acquire),
         task_completed: state.notify_task_completed.load(Ordering::Acquire),
         interaction: state.notify_interaction.load(Ordering::Acquire),
+    }
+}
+
+#[tauri::command]
+fn set_language(app: AppHandle, state: State<'_, HarnessState>, language: String) {
+    let language = if language == "en" { "en" } else { "zh" };
+    let changed = {
+        let Ok(mut current) = state.language.lock() else {
+            return;
+        };
+        if *current == language {
+            false
+        } else {
+            *current = language.to_string();
+            true
+        }
+    };
+    if !changed {
+        return;
+    }
+    // Rebuild the tray menu so its labels follow the new language.
+    #[cfg(feature = "tray-icon")]
+    {
+        let _ = app.remove_tray_by_id("main-tray");
+        if let Err(error) = build_tray(&app, language) {
+            emit_log(&app, &state.logs, "desk", format!("重建托盘菜单失败：{error}"));
+        }
     }
 }
 
@@ -2709,22 +2762,42 @@ fn setup_app_menu<R: tauri::Runtime>(app: &mut tauri::App<R>) -> tauri::Result<(
 }
 
 #[cfg(feature = "tray-icon")]
-fn setup_tray<R: tauri::Runtime>(app: &mut tauri::App<R>) -> tauri::Result<()> {
-    let show = MenuItem::with_id(app, "show", "打开窗口", true, None::<&str>)?;
-    let settings = MenuItem::with_id(app, "settings", "设置…", true, None::<&str>)?;
-    let start = MenuItem::with_id(app, "start", "启动 Harness", true, None::<&str>)?;
-    let restart = MenuItem::with_id(app, "restart", "重启 Harness", true, None::<&str>)?;
-    let stop = MenuItem::with_id(app, "stop", "停止 Harness", true, None::<&str>)?;
-    let logs = MenuItem::with_id(app, "logs", "打开运行日志", true, None::<&str>)?;
-    let check_app = MenuItem::with_id(app, "check-app", "检查 App 更新…", true, None::<&str>)?;
-    let check_dsh = MenuItem::with_id(app, "check-dsh", "检查内置 dsh 更新…", true, None::<&str>)?;
-    let quit = MenuItem::with_id(
-        app,
-        "quit",
-        "退出 DeepSeek Harness Desk",
-        true,
-        None::<&str>,
-    )?;
+fn tray_menu_label(lang: &str, id: &str) -> &'static str {
+    match (lang, id) {
+        ("en", "show") => "Open Window",
+        ("en", "settings") => "Settings…",
+        ("en", "start") => "Start Harness",
+        ("en", "restart") => "Restart Harness",
+        ("en", "stop") => "Stop Harness",
+        ("en", "logs") => "Open Run Logs",
+        ("en", "check-app") => "Check for App Updates…",
+        ("en", "check-dsh") => "Check for Bundled dsh Updates…",
+        ("en", "quit") => "Quit DeepSeek Harness Desk",
+        (_, "show") => "打开窗口",
+        (_, "settings") => "设置…",
+        (_, "start") => "启动 Harness",
+        (_, "restart") => "重启 Harness",
+        (_, "stop") => "停止 Harness",
+        (_, "logs") => "打开运行日志",
+        (_, "check-app") => "检查 App 更新…",
+        (_, "check-dsh") => "检查内置 dsh 更新…",
+        (_, "quit") => "退出 DeepSeek Harness Desk",
+        // All known ids are handled above; the fallback is unreachable.
+        (_, _) => "",
+    }
+}
+
+#[cfg(feature = "tray-icon")]
+fn build_tray<R: tauri::Runtime>(app: &AppHandle<R>, lang: &str) -> tauri::Result<()> {
+    let show = MenuItem::with_id(app, "show", tray_menu_label(lang, "show"), true, None::<&str>)?;
+    let settings = MenuItem::with_id(app, "settings", tray_menu_label(lang, "settings"), true, None::<&str>)?;
+    let start = MenuItem::with_id(app, "start", tray_menu_label(lang, "start"), true, None::<&str>)?;
+    let restart = MenuItem::with_id(app, "restart", tray_menu_label(lang, "restart"), true, None::<&str>)?;
+    let stop = MenuItem::with_id(app, "stop", tray_menu_label(lang, "stop"), true, None::<&str>)?;
+    let logs = MenuItem::with_id(app, "logs", tray_menu_label(lang, "logs"), true, None::<&str>)?;
+    let check_app = MenuItem::with_id(app, "check-app", tray_menu_label(lang, "check-app"), true, None::<&str>)?;
+    let check_dsh = MenuItem::with_id(app, "check-dsh", tray_menu_label(lang, "check-dsh"), true, None::<&str>)?;
+    let quit = MenuItem::with_id(app, "quit", tray_menu_label(lang, "quit"), true, None::<&str>)?;
     let menu = MenuBuilder::new(app)
         .items(&[
             &show, &settings, &start, &restart, &stop, &logs, &check_app, &check_dsh, &quit,
@@ -2735,7 +2808,7 @@ fn setup_tray<R: tauri::Runtime>(app: &mut tauri::App<R>) -> tauri::Result<()> {
         "../../../Assets.xcassets/StatusBarIcon.imageset/statusbar_whale@2x.png"
     ))?;
 
-    let tray = TrayIconBuilder::with_id("main-tray")
+    TrayIconBuilder::with_id("main-tray")
         .menu(&menu)
         .tooltip("DeepSeek Harness Desk")
         .icon(icon)
@@ -2782,10 +2855,14 @@ fn setup_tray<R: tauri::Runtime>(app: &mut tauri::App<R>) -> tauri::Result<()> {
             {
                 show_main_window(tray.app_handle());
             }
-        });
-
-    tray.build(app)?;
+        })
+        .build(app)?;
     Ok(())
+}
+
+#[cfg(feature = "tray-icon")]
+fn setup_tray<R: tauri::Runtime>(app: &mut tauri::App<R>, state: &HarnessState) -> tauri::Result<()> {
+    build_tray(app.handle(), &current_language(state))
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
@@ -2805,6 +2882,7 @@ pub fn run() {
         notify_task_completed: Arc::new(AtomicBool::new(true)),
         notify_interaction: Arc::new(AtomicBool::new(true)),
         pending_attention: Arc::new(AtomicI64::new(0)),
+        language: Arc::new(Mutex::new("zh".to_string())),
     };
 
     tauri::Builder::default()
@@ -2817,7 +2895,10 @@ pub fn run() {
         .setup(|app| {
             setup_app_menu(app)?;
             #[cfg(feature = "tray-icon")]
-            setup_tray(app)?;
+            {
+                let state = app.state::<HarnessState>().inner().clone();
+                setup_tray(app, &state)?;
+            }
             spawn_task_watcher(app.handle().clone(), app.state::<HarnessState>().inner().clone());
             Ok(())
         })
@@ -2872,6 +2953,7 @@ pub fn run() {
             set_dock_visibility,
             set_notification_prefs,
             notification_prefs,
+            set_language,
         ])
         .build(tauri::generate_context!())
         .expect("error while building tauri application")

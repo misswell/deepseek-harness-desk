@@ -1,6 +1,6 @@
 # DeepSeek Harness Desk（Tauri）
 
-这是 DeepSeek Harness Desk 0.3.18 的跨平台 Tauri v2 客户端。它使用一个固定的 `main` 窗口承载 Harness Web UI，窗口顶栏由 Tauri 原生拖动区域处理，并通过菜单栏/系统托盘唤醒隐藏窗口。
+这是 DeepSeek Harness Desk 0.3.19 的跨平台 Tauri v2 客户端。它使用一个固定的 `main` 窗口承载 Harness Web UI，窗口顶栏由 Tauri 原生拖动区域处理，并通过菜单栏/系统托盘唤醒隐藏窗口。
 
 ## 开发
 
@@ -26,3 +26,5 @@ npm run build
 主窗口支持快捷键缩放：macOS 使用 `⌘ +` / `⌘ -` / `⌘ 0`，Windows 和 Linux 使用 `Ctrl +` / `Ctrl -` / `Ctrl 0`，缩放范围为 75%–175%，设置会自动保存。
 
 应用通过订阅 Harness 的实时事件流（`/api/events.mux` + `/api/events.host`）提供任务提醒：Harness 完成任务、向你提问或请求批准时，在应用图标上显示角标（macOS / Linux）并发送系统通知；仅当窗口未聚焦时提醒，回到窗口后角标自动清除。可在“设置 → 高级 → 通知提醒”中开关。
+
+界面国际化：`src/i18n.js` 集中维护中文与英文文案（通过 `data-i18n` 属性与 `t()` 调用使用），默认跟随系统语言，可在“设置 → 通用 → 界面语言”切换；托盘菜单与系统通知随语言同步切换。运行 `npm run test:i18n` 可校验文案键完整性与一致性。
