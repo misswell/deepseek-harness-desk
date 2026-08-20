@@ -196,8 +196,8 @@ final class RuntimeManager: ObservableObject {
             }
 
             let metadata = try JSONDecoder().decode(NPMPackageMetadata.self, from: data)
-            guard let latest = metadata.distTags.latest, !latest.isEmpty else {
-                throw RuntimeError.updateFailed("npm 未返回 \(Self.packageName) 的 latest 版本")
+            guard let latest = metadata.distTags.newestAvailable else {
+                throw RuntimeError.updateFailed("npm 未返回 \(Self.packageName) 的可用版本（latest/next）")
             }
             latestHarnessVersion = latest
 
@@ -702,6 +702,16 @@ enum RuntimeError: LocalizedError {
 private struct NPMPackageMetadata: Decodable {
     struct DistTags: Decodable {
         let latest: String?
+        let next: String?
+
+        /// npm 发布新 rc 时先打 `next` 标签，而 `latest` 仍指向旧版
+        /// （例如 latest=0.1.0-rc.7、next=0.1.0-rc.8）。只读 latest 会漏掉
+        /// 刚发布的新 rc，这里返回两者中较新的一个。
+        var newestAvailable: String? {
+            guard let latest, !latest.isEmpty else { return next }
+            guard let next, !next.isEmpty else { return latest }
+            return UpdateManager.isNewer(next, than: latest) ? next : latest
+        }
     }
 
     let distTags: DistTags

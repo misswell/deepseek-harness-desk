@@ -219,6 +219,7 @@ struct NpmMetadata {
 #[derive(Deserialize, Debug)]
 struct NpmDistTags {
     latest: Option<String>,
+    next: Option<String>,
 }
 
 #[derive(Serialize, Clone, Debug)]
@@ -308,6 +309,26 @@ fn compare_versions(candidate: &str, current: &str) -> VersionOrdering {
 
 fn is_newer_version(candidate: &str, current: &str) -> bool {
     compare_versions(candidate, current) == VersionOrdering::Greater
+}
+
+/// Pick the newest version among the npm dist-tags the harness team
+/// publishes. New release candidates are tagged `next` first while `latest`
+/// still points at the previous one (e.g. `0.1.0-rc.8` published as `next`
+/// while `latest` is still `0.1.0-rc.7`); reading only `latest` would miss a
+/// brand-new rc. This returns the newer of the two, or whichever is present.
+fn newest_published_version(latest: Option<&str>, next: Option<&str>) -> Option<String> {
+    match (latest, next) {
+        (Some(latest), Some(next)) => {
+            if is_newer_version(next, latest) {
+                Some(next.to_string())
+            } else {
+                Some(latest.to_string())
+            }
+        }
+        (Some(latest), None) => Some(latest.to_string()),
+        (None, Some(next)) => Some(next.to_string()),
+        (None, None) => None,
+    }
 }
 
 fn is_safe_package_version(version: &str) -> bool {
@@ -1744,11 +1765,19 @@ async fn check_dsh_update_inner(app: &AppHandle) -> Result<DshUpdateStatus, Stri
         .json::<NpmMetadata>()
         .await
         .map_err(|error| format!("解析 dsh 更新信息失败：{error}"))?;
-    let latest = metadata
-        .dist_tags
-        .latest
-        .filter(|version| !version.is_empty())
-        .ok_or("npm 未返回 dsh 的 latest 版本。")?;
+    let latest = newest_published_version(
+        metadata
+            .dist_tags
+            .latest
+            .filter(|version| !version.is_empty())
+            .as_deref(),
+        metadata
+            .dist_tags
+            .next
+            .filter(|version| !version.is_empty())
+            .as_deref(),
+    )
+    .ok_or("npm 未返回 dsh 的可用版本（latest/next）。")?;
     let current = current_version.unwrap_or_default();
     let available = is_newer_version(&latest, &current);
     Ok(DshUpdateStatus {
@@ -3055,6 +3084,32 @@ mod tests {
         assert!(is_newer_version("0.1.0", "0.1.0-rc.6"));
         assert!(!is_newer_version("0.1.0-rc.6", "0.1.0"));
         assert!(!is_newer_version("v0.2.0", "0.2.0"));
+    }
+
+    #[test]
+    fn newest_published_version_prefers_newer_dist_tag() {
+        // rc8 is tagged `next` while `latest` still points at rc7.
+        assert_eq!(
+            newest_published_version(Some("0.1.0-rc.7"), Some("0.1.0-rc.8")).as_deref(),
+            Some("0.1.0-rc.8")
+        );
+        assert_eq!(
+            newest_published_version(Some("0.1.0-rc.8"), Some("0.1.0-rc.7")).as_deref(),
+            Some("0.1.0-rc.8")
+        );
+        assert_eq!(
+            newest_published_version(Some("0.1.0-rc.8"), Some("0.1.0-rc.8")).as_deref(),
+            Some("0.1.0-rc.8")
+        );
+        assert_eq!(
+            newest_published_version(Some("0.1.0-rc.8"), None).as_deref(),
+            Some("0.1.0-rc.8")
+        );
+        assert_eq!(
+            newest_published_version(None, Some("0.1.0-rc.8")).as_deref(),
+            Some("0.1.0-rc.8")
+        );
+        assert_eq!(newest_published_version(None, None), None);
     }
 
     #[test]
