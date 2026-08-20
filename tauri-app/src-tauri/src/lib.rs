@@ -682,7 +682,9 @@ fn is_managed_harness_command(
     let Ok(port) = port_text.parse::<u16>() else {
         return false;
     };
-    (port_start..=port_end).contains(&port) && arguments[port_text.len()..].trim().is_empty()
+    let trailing_arguments = arguments[port_text.len()..].trim();
+    (port_start..=port_end).contains(&port)
+        && matches!(trailing_arguments, "" | "--no-open")
 }
 
 fn orphaned_managed_harness_process_ids(app: &AppHandle) -> Vec<u32> {
@@ -822,7 +824,7 @@ fn spawn_dsh(command: &DshCommand, port: u16, app: &AppHandle) -> std::io::Resul
         .unwrap_or_else(|_| "--max-old-space-size=1024".to_string());
 
     process
-        .args(["web", "--port", &port.to_string()])
+        .args(["web", "--port", &port.to_string(), "--no-open"])
         .current_dir(home_directory().unwrap_or_else(|| PathBuf::from(".")))
         .env("PATH", process_path(&command.program, app))
         .env("NODE_OPTIONS", node_options)
@@ -3229,8 +3231,20 @@ mod tests {
             PORT_START,
             PORT_END
         ));
+        assert!(is_managed_harness_command(
+            "node /Users/example/Library/Application Support/DeepSeek Harness Desk/runtime/dsh/0.1.0-rc.7/node_modules/.bin/dsh web --port 3080 --no-open",
+            executable,
+            PORT_START,
+            PORT_END
+        ));
         assert!(!is_managed_harness_command(
             "node /Users/example/Library/Application Support/DeepSeek Harness Desk/runtime/dsh/0.1.0-rc.7/node_modules/.bin/dsh web --port 3100",
+            executable,
+            PORT_START,
+            PORT_END
+        ));
+        assert!(!is_managed_harness_command(
+            "node /Users/example/Library/Application Support/DeepSeek Harness Desk/runtime/dsh/0.1.0-rc.7/node_modules/.bin/dsh web --port 3080 --verbose",
             executable,
             PORT_START,
             PORT_END

@@ -98,7 +98,7 @@ final class HarnessManager: ObservableObject {
         let errorPipe = Pipe()
 
         candidate.executableURL = executableURL
-        candidate.arguments = ["web", "--port", String(selectedPort)]
+        candidate.arguments = ["web", "--port", String(selectedPort), "--no-open"]
         candidate.currentDirectoryURL = FileManager.default.homeDirectoryForCurrentUser
         candidate.environment = runtimeManager.processEnvironment()
         candidate.standardOutput = outputPipe
@@ -137,7 +137,7 @@ final class HarnessManager: ObservableObject {
         lastExitCode = nil
 
         logger.append(
-            "Launching \(executableURL.path) web --port \(selectedPort)",
+            "Launching \(executableURL.path) web --port \(selectedPort) --no-open",
             to: .desk
         )
 
