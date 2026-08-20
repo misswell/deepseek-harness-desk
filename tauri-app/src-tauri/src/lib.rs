@@ -17,6 +17,8 @@ use tauri_plugin_notification::NotificationExt;
 
 use tauri::menu::{MenuBuilder, MenuItem, MenuItemKind, SubmenuBuilder};
 use tauri::tray::{MouseButton, TrayIconBuilder, TrayIconEvent};
+use tauri::utils::Theme;
+use tauri::window::Color;
 use tauri::{
     AppHandle, Emitter, Manager, RunEvent, State, WebviewWindow, WebviewWindowBuilder,
     WindowEvent,
@@ -2798,10 +2800,27 @@ fn create_main_window<R: tauri::Runtime>(app: &AppHandle<R>) -> Result<WebviewWi
         .iter()
         .find(|window| window.label == "main")
         .ok_or_else(|| "缺少 main 窗口配置".to_string())?;
-    WebviewWindowBuilder::from_config(app, config)
+    let window = WebviewWindowBuilder::from_config(app, config)
         .map_err(|error| error.to_string())?
         .build()
-        .map_err(|error| error.to_string())
+        .map_err(|error| error.to_string())?;
+    sync_window_background(&window);
+    Ok(window)
+}
+
+fn window_background_color(theme: Theme) -> Color {
+    if matches!(theme, Theme::Dark) {
+        Color(28, 28, 30, 255)
+    } else {
+        Color(245, 245, 247, 255)
+    }
+}
+
+fn sync_window_background<R: tauri::Runtime>(window: &WebviewWindow<R>) {
+    let Ok(theme) = window.theme() else {
+        return;
+    };
+    let _ = window.set_background_color(Some(window_background_color(theme)));
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -3071,6 +3090,9 @@ pub fn run() {
         .manage(state)
         .setup(|app| {
             setup_app_menu(app)?;
+            if let Some(window) = app.get_webview_window("main") {
+                sync_window_background(&window);
+            }
             #[cfg(feature = "tray-icon")]
             {
                 let state = app.state::<HarnessState>().inner().clone();
@@ -3119,6 +3141,8 @@ pub fn run() {
                     let _ = window.hide();
                     let _ = window.app_handle().emit("window-hidden", ());
                 }
+            } else if let WindowEvent::ThemeChanged(theme) = event {
+                let _ = window.set_background_color(Some(window_background_color(*theme)));
             } else if let WindowEvent::Focused(true) = event {
                 // The user is back — clear the attention badge and let the
                 // shell reload the Harness page if it was unloaded on unfocus.
@@ -3199,6 +3223,15 @@ pub fn run() {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn window_background_colors_follow_system_theme() {
+        assert_eq!(
+            window_background_color(Theme::Light),
+            Color(245, 245, 247, 255)
+        );
+        assert_eq!(window_background_color(Theme::Dark), Color(28, 28, 30, 255));
+    }
 
     #[test]
     fn memory_saver_destroys_hidden_webview() {

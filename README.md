@@ -2,7 +2,7 @@
 
 DeepSeek Harness Desk 当前正式版是基于 **Tauri v2** 构建的跨平台桌面客户端，不是 SwiftUI 原生应用。应用代码位于 [`tauri-app`](tauri-app)，使用 Rust、WebView 和系统原生能力，支持 macOS、Windows 与 Linux。
 
-当前版本：0.3.24。安装包请从 [GitHub Releases](https://github.com/misswell/deepseek-harness-desk/releases/latest) 下载。
+当前版本：0.3.25。安装包请从 [GitHub Releases](https://github.com/misswell/deepseek-harness-desk/releases/latest) 下载。
 
 ## 开发
 
