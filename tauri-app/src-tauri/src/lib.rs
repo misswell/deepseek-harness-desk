@@ -1805,9 +1805,6 @@ async fn install_dsh_update_inner(
         return Err("运行时更新正在进行，请等待当前更新完成。".to_string());
     }
     let was_running = snapshot(state).running;
-    if was_running {
-        stop_harness_inner(app, state);
-    }
     let result = async {
         let node_root =
             managed_node_root(Some(app)).ok_or("未找到内置 Node.js，请先安装运行时。")?;
@@ -1818,18 +1815,32 @@ async fn install_dsh_update_inner(
         let dsh_staging = staging.join("dsh");
         fs::create_dir_all(&dsh_staging)
             .map_err(|error| format!("创建 dsh 临时目录失败：{error}"))?;
+        // 先下载并安装到临时目录，期间 Harness 保持运行、用户可继续使用。
+        // 下载/安装全部完成、确认新版本可用之后，才短暂停止 Harness 来替换
+        // 版本目录，替换完成后由调用方重新启动，把打断用户的时间压到最短。
         emit_runtime_progress(
             app,
             state,
-            format!("正在安装内置 dsh {version}…"),
+            format!("正在下载并安装内置 dsh {version}…（Harness 可继续使用）"),
             Some(0.08),
             false,
             None,
         );
         install_dsh_package(app, state, &node_root, &dsh_staging, &version)?;
-        emit_runtime_progress(app, state, "正在校验内置 dsh…", Some(0.82), false, None);
+        emit_runtime_progress(
+            app,
+            state,
+            "下载完成，正在校验内置 dsh…",
+            Some(0.82),
+            false,
+            None,
+        );
         if !is_executable(&dsh_executable(&dsh_staging)) {
             return Err("npm 安装完成，但没有生成 dsh 命令。".to_string());
+        }
+        // 下载与校验已完成，此时才停止 Harness，随即替换版本目录。
+        if was_running {
+            stop_harness_inner(app, state);
         }
         fs::create_dir_all(runtime_root.join("dsh"))
             .map_err(|error| format!("创建 dsh 版本目录失败：{error}"))?;
@@ -1845,6 +1856,8 @@ async fn install_dsh_update_inner(
     .await;
     state.runtime_installing.store(false, Ordering::Release);
     if let Err(error) = &result {
+        // 下载阶段失败时 Harness 仍在运行，start_harness_inner 检测到已运行
+        // 会直接返回，不会重复启动；替换阶段失败时则在这里重新拉起 Harness。
         if was_running {
             let _ = start_harness_inner(app, state).await;
         }
