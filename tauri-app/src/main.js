@@ -1027,6 +1027,7 @@ function bindEvents() {
     const enabled = elements.memorySaverToggle.checked;
     state.memorySaver = enabled;
     localStorage.setItem("memorySaver", String(enabled));
+    void call("set_memory_saver", { enabled }).catch((error) => setToast(errorMessage(error), true));
   });
   elements.memorySaverUnfocusToggle.addEventListener("change", () => {
     state.memorySaverUnfocus = elements.memorySaverUnfocusToggle.checked;
@@ -1177,6 +1178,9 @@ async function initialize() {
   elements.languageSelect.value = langPref;
   document.documentElement.lang = lang === "zh" ? "zh-CN" : "en";
   applyStaticTranslations(document, lang);
+  await call("set_memory_saver", { enabled: state.memorySaver }).catch((error) => {
+    setToast(errorMessage(error), true);
+  });
   bindEvents();
   bindInteractionTracking();
   renderSettingsTab();

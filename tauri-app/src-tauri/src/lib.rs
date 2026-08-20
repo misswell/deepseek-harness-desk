@@ -17,7 +17,10 @@ use tauri_plugin_notification::NotificationExt;
 
 use tauri::menu::{MenuBuilder, MenuItem, MenuItemKind, SubmenuBuilder};
 use tauri::tray::{MouseButton, TrayIconBuilder, TrayIconEvent};
-use tauri::{AppHandle, Emitter, Manager, RunEvent, State, WebviewWindow, WindowEvent};
+use tauri::{
+    AppHandle, Emitter, Manager, RunEvent, State, WebviewWindow, WebviewWindowBuilder,
+    WindowEvent,
+};
 
 const PORT_START: u16 = 3080;
 const PORT_END: u16 = 3099;
@@ -99,6 +102,9 @@ struct HarnessState {
     lifecycle: Arc<Mutex<()>>,
     child: Arc<Mutex<Option<Child>>>,
     port: Arc<AtomicU16>,
+    memory_saver: Arc<AtomicBool>,
+    keep_alive_after_window_destroy: Arc<AtomicBool>,
+    main_window_recreating: Arc<AtomicBool>,
     dsh_path: Arc<Mutex<Option<PathBuf>>>,
     logs: Arc<Mutex<VecDeque<HarnessLog>>>,
     last_error: Arc<Mutex<Option<String>>>,
@@ -2732,6 +2738,12 @@ fn window_hide(window: WebviewWindow) -> Result<(), String> {
 }
 
 #[tauri::command]
+fn set_memory_saver(state: State<'_, HarnessState>, enabled: bool) -> Result<(), String> {
+    state.memory_saver.store(enabled, Ordering::Release);
+    Ok(())
+}
+
+#[tauri::command]
 fn window_start_dragging(window: WebviewWindow) -> Result<(), String> {
     window.start_dragging().map_err(|error| error.to_string())
 }
@@ -2776,26 +2788,112 @@ fn activate_macos_application() {
     let _ = running.activateWithOptions(NSApplicationActivationOptions::ActivateAllWindows);
 }
 
+fn create_main_window<R: tauri::Runtime>(app: &AppHandle<R>) -> Result<WebviewWindow<R>, String> {
+    let config = app
+        .config()
+        .app
+        .windows
+        .iter()
+        .find(|window| window.label == "main")
+        .ok_or_else(|| "缺少 main 窗口配置".to_string())?;
+    WebviewWindowBuilder::from_config(app, config)
+        .map_err(|error| error.to_string())?
+        .build()
+        .map_err(|error| error.to_string())
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum HiddenWindowAction {
+    DestroyWebview,
+    Hide,
+}
+
+fn hidden_window_action(memory_saver: bool) -> HiddenWindowAction {
+    if memory_saver {
+        HiddenWindowAction::DestroyWebview
+    } else {
+        HiddenWindowAction::Hide
+    }
+}
+
+fn present_main_window<R: tauri::Runtime>(
+    app: &AppHandle<R>,
+    window: WebviewWindow<R>,
+) -> bool {
+    if window.show().is_err() {
+        return false;
+    }
+    let _ = window.unminimize();
+    let _ = window.set_focus();
+    #[cfg(target_os = "macos")]
+    {
+        let _ = app.run_on_main_thread(activate_macos_application);
+    }
+    // Wake an existing shell or the newly created shell so it can restore the
+    // Harness web UI after the window is shown again.
+    let _ = app.emit("window-shown", ());
+    // The user is back — clear the attention badge.
+    let state = app.state::<HarnessState>();
+    clear_badge(app, state.inner());
+    state
+        .keep_alive_after_window_destroy
+        .store(false, Ordering::Release);
+    true
+}
+
 fn show_main_window<R: tauri::Runtime>(app: &AppHandle<R>) {
     #[cfg(target_os = "macos")]
     {
         let _ = app.show();
     }
+
     if let Some(window) = app.get_webview_window("main") {
-        let _ = window.show();
-        let _ = window.unminimize();
-        let _ = window.set_focus();
+        if present_main_window(app, window) {
+            return;
+        }
     }
-    #[cfg(target_os = "macos")]
-    {
-        let _ = app.run_on_main_thread(activate_macos_application);
+
+    let state = app.state::<HarnessState>().inner().clone();
+    if state.main_window_recreating.swap(true, Ordering::AcqRel) {
+        return;
     }
-    // Wake the shell up again so it can restore the Harness web UI that was
-    // unloaded while the window was hidden.
-    let _ = app.emit("window-shown", ());
-    // The user is back — clear the attention badge.
-    let state = app.state::<HarnessState>();
-    clear_badge(app, state.inner());
+
+    // A destroyed main window keeps the app alive in the tray, but that flag
+    // must not also block the replacement window from being created. The
+    // destroy callback has already completed by the time a tray/Dock reopen
+    // event reaches this path; if creation briefly races the native teardown,
+    // the retry loop below handles it.
+    state
+        .keep_alive_after_window_destroy
+        .store(false, Ordering::Release);
+
+    // Tauri warns that creating a WebviewWindow synchronously from a window
+    // or tray callback can deadlock on Windows. Rebuild off the event handler
+    // and retry briefly while the old window finishes destroying.
+    let app = app.clone();
+    std::thread::spawn(move || {
+        for _ in 0..40 {
+            let window = match app.get_webview_window("main") {
+                Some(window) => Some(window),
+                None => match create_main_window(&app) {
+                    Ok(window) => Some(window),
+                    Err(error) => {
+                        eprintln!("重建主窗口失败：{error}");
+                        None
+                    }
+                },
+            };
+            if let Some(window) = window {
+                if present_main_window(&app, window) {
+                    state.main_window_recreating.store(false, Ordering::Release);
+                    return;
+                }
+            }
+            std::thread::sleep(Duration::from_millis(25));
+        }
+        state.main_window_recreating.store(false, Ordering::Release);
+        eprintln!("重建主窗口超时");
+    });
 }
 
 fn setup_app_menu<R: tauri::Runtime>(app: &mut tauri::App<R>) -> tauri::Result<()> {
@@ -2944,6 +3042,9 @@ pub fn run() {
         lifecycle: Arc::new(Mutex::new(())),
         child: Arc::new(Mutex::new(None)),
         port: Arc::new(AtomicU16::new(0)),
+        memory_saver: Arc::new(AtomicBool::new(true)),
+        keep_alive_after_window_destroy: Arc::new(AtomicBool::new(false)),
+        main_window_recreating: Arc::new(AtomicBool::new(false)),
         dsh_path: Arc::new(Mutex::new(None)),
         logs: Arc::new(Mutex::new(VecDeque::new())),
         last_error: Arc::new(Mutex::new(None)),
@@ -2991,11 +3092,31 @@ pub fn run() {
         .on_window_event(|window, event| {
             if let WindowEvent::CloseRequested { api, .. } = event {
                 api.prevent_close();
-                let _ = window.hide();
-                // The app keeps running in the tray after the window closes.
-                // Let the shell unload the Harness web UI so the WebView can
-                // release its (often several hundred MB) rendering memory.
-                let _ = window.app_handle().emit("window-hidden", ());
+                let state = window.app_handle().state::<HarnessState>();
+                if hidden_window_action(state.memory_saver.load(Ordering::Acquire))
+                    == HiddenWindowAction::DestroyWebview
+                {
+                    // Removing the Harness iframe does not destroy the shared
+                    // WebKit WebContent process. Destroy the main WebView so
+                    // its renderer can actually release its accumulated heap;
+                    // the tray remains alive and recreates it on next show.
+                    state
+                        .keep_alive_after_window_destroy
+                        .store(true, Ordering::Release);
+                    if let Err(error) = window.destroy() {
+                        state
+                            .keep_alive_after_window_destroy
+                            .store(false, Ordering::Release);
+                        eprintln!("销毁主 WebView 失败：{error}");
+                        let _ = window.hide();
+                        let _ = window.app_handle().emit("window-hidden", ());
+                    }
+                } else {
+                    // The app keeps running in the tray after the window
+                    // closes when the memory saver is disabled.
+                    let _ = window.hide();
+                    let _ = window.app_handle().emit("window-hidden", ());
+                }
             } else if let WindowEvent::Focused(true) = event {
                 // The user is back — clear the attention badge and let the
                 // shell reload the Harness page if it was unloaded on unfocus.
@@ -3030,6 +3151,7 @@ pub fn run() {
             window_toggle_maximize,
             window_hide,
             window_start_dragging,
+            set_memory_saver,
             set_dock_visibility,
             set_notification_prefs,
             notification_prefs,
@@ -3039,13 +3161,35 @@ pub fn run() {
         .expect("error while building tauri application")
         .run(|app, event| {
             #[cfg(target_os = "macos")]
-            if let RunEvent::Reopen { .. } = event {
+            if matches!(&event, RunEvent::Reopen { .. }) {
                 show_main_window(app);
             }
 
-            if let RunEvent::ExitRequested { .. } = event {
-                let state = app.state::<HarnessState>();
-                stop_harness_inner(app, &state);
+            match event {
+                RunEvent::ExitRequested { api, code, .. } => {
+                    let state = app.state::<HarnessState>();
+                    if code.is_none()
+                        && state
+                            .keep_alive_after_window_destroy
+                            .load(Ordering::Acquire)
+                    {
+                        // Destroying the only window would otherwise terminate
+                        // the event loop. Keep the tray resident until the user
+                        // explicitly chooses Quit or uses the app's real exit
+                        // action.
+                        api.prevent_exit();
+                    } else {
+                        state
+                            .keep_alive_after_window_destroy
+                            .store(false, Ordering::Release);
+                        stop_harness_inner(app, &state);
+                    }
+                }
+                RunEvent::Exit => {
+                    let state = app.state::<HarnessState>();
+                    stop_harness_inner(app, &state);
+                }
+                _ => {}
             }
         });
 }
@@ -3053,6 +3197,15 @@ pub fn run() {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn memory_saver_destroys_hidden_webview() {
+        assert_eq!(
+            hidden_window_action(true),
+            HiddenWindowAction::DestroyWebview
+        );
+        assert_eq!(hidden_window_action(false), HiddenWindowAction::Hide);
+    }
 
     #[test]
     fn reversed_port_range_is_empty() {

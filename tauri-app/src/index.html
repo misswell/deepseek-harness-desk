@@ -296,7 +296,7 @@
                   <label class="setting-row">
                     <span>
                       <strong data-i18n="advanced.memorySaver">窗口隐藏时释放 Harness 页面内存</strong>
-                      <small data-i18n="advanced.memorySaverDesc">关闭窗口到菜单栏/托盘时卸载 Harness 页面以释放内存；重新打开窗口时页面会重新加载，需要短暂等待。</small>
+                      <small data-i18n="advanced.memorySaverDesc">关闭窗口到菜单栏/托盘时销毁主 WebView 以释放渲染进程内存；重新打开窗口时页面会重新加载，需要短暂等待。</small>
                     </span>
                     <input type="checkbox" id="memory-saver-toggle" />
                   </label>
@@ -315,7 +315,7 @@
                     <input type="checkbox" id="memory-saver-recycle-toggle" />
                   </label>
                 </div>
-                <p class="setting-note" data-i18n="advanced.memorySaverNote">释放的是渲染页面（WebView）占用的内存，Harness 后台服务会保持运行，重新打开窗口即可继续使用。</p>
+                <p class="setting-note" data-i18n="advanced.memorySaverNote">主窗口 WebView 会在隐藏时销毁，Harness 后台服务会保持运行；重新打开窗口即可继续使用。</p>
                 <div class="settings-section-heading" data-i18n="advanced.section.notify">通知提醒</div>
                 <div class="settings-group">
                   <label class="setting-row">
