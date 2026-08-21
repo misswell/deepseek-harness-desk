@@ -11,6 +11,7 @@ import {
   storedLanguagePreference,
   translate,
 } from "./i18n.js";
+import { shouldShowAppUpdateBanner } from "./update-banner.js";
 
 const tauri = window.__TAURI__;
 const invoke = tauri?.core?.invoke;
@@ -377,11 +378,13 @@ function renderAppUpdate() {
   elements.appUpdateStatus.textContent = update.status || t("common.notChecked");
   elements.aboutVersion.textContent = t("about.versionLabel", { version: update.current_version || "—" });
   const available = update.available === true;
-  const ignored = localStorage.getItem("ignoredAppUpdateVersion") === update.latest_version;
+  const ignoredVersion = localStorage.getItem("ignoredAppUpdateVersion");
+  const dismissedVersion = localStorage.getItem("dismissedAppUpdateVersion");
+  const showBanner = shouldShowAppUpdateBanner(update, ignoredVersion, dismissedVersion);
   elements.installAppUpdateButton.classList.toggle("hidden", !available);
   elements.openReleasePageButton.classList.toggle("hidden", !update.release_url);
-  elements.appUpdateBanner.classList.toggle("hidden", !available || ignored);
-  if (available && !ignored) {
+  elements.appUpdateBanner.classList.toggle("hidden", !showBanner);
+  if (showBanner) {
     elements.appUpdateBannerText.textContent = t("update.bannerWith", { version: update.latest_version });
   }
 }
@@ -993,10 +996,15 @@ function bindEvents() {
   elements.appUpdateBannerInstall.addEventListener("click", () => installAppUpdate());
   elements.appUpdateBannerIgnore.addEventListener("click", () => {
     const version = state.appUpdate?.latest_version;
-    if (version) localStorage.setItem("ignoredAppUpdateVersion", version);
+    if (version) {
+      localStorage.setItem("ignoredAppUpdateVersion", version);
+      localStorage.removeItem("dismissedAppUpdateVersion");
+    }
     elements.appUpdateBanner.classList.add("hidden");
   });
   elements.appUpdateBannerDismiss.addEventListener("click", () => {
+    const version = state.appUpdate?.latest_version;
+    if (version) localStorage.setItem("dismissedAppUpdateVersion", version);
     elements.appUpdateBanner.classList.add("hidden");
   });
   elements.openReleasePageButton.addEventListener("click", async () => {
