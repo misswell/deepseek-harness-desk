@@ -15,6 +15,13 @@ use futures_util::StreamExt;
 use tokio_tungstenite::connect_async;
 use tauri_plugin_notification::NotificationExt;
 
+#[cfg(target_os = "macos")]
+use objc2::rc::Retained;
+#[cfg(target_os = "macos")]
+use objc2_foundation::{ns_string, NSObjectNSKeyValueCoding, NSString};
+#[cfg(target_os = "macos")]
+use objc2_web_kit::WKWebViewConfiguration;
+
 use tauri::menu::{MenuBuilder, MenuItem, MenuItemKind, SubmenuBuilder};
 use tauri::tray::{MouseButton, TrayIconBuilder, TrayIconEvent};
 use tauri::utils::Theme;
@@ -2792,18 +2799,37 @@ fn activate_macos_application() {
     let _ = running.activateWithOptions(NSApplicationActivationOptions::ActivateAllWindows);
 }
 
-fn create_main_window<R: tauri::Runtime>(app: &AppHandle<R>) -> Result<WebviewWindow<R>, String> {
+#[cfg(target_os = "macos")]
+fn main_window_webview_configuration() -> Retained<WKWebViewConfiguration> {
+    let marker = objc2::MainThreadMarker::new()
+        .expect("WKWebView configuration must be created on the main thread");
+    let config = unsafe { WKWebViewConfiguration::new(marker) };
+    let display_name = NSString::from_str("DeepSeek Harness Desk");
+
+    // macOS labels the separate WebKit content process with the page origin by
+    // default. Set its process display name so Activity Monitor attributes it
+    // to the host application instead of showing tauri://localhost.
+    unsafe {
+        config.setValue_forKey(
+            Some(display_name.as_ref()),
+            ns_string!("processDisplayName"),
+        );
+    }
+    config
+}
+
+fn create_main_window<R: tauri::Runtime>(app: &AppHandle<R>) -> tauri::Result<WebviewWindow<R>> {
     let config = app
         .config()
         .app
         .windows
         .iter()
         .find(|window| window.label == "main")
-        .ok_or_else(|| "缺少 main 窗口配置".to_string())?;
-    let window = WebviewWindowBuilder::from_config(app, config)
-        .map_err(|error| error.to_string())?
-        .build()
-        .map_err(|error| error.to_string())?;
+        .ok_or_else(|| tauri::Error::AssetNotFound("缺少 main 窗口配置".to_string()))?;
+    let builder = WebviewWindowBuilder::from_config(app, config)?;
+    #[cfg(target_os = "macos")]
+    let builder = builder.with_webview_configuration(main_window_webview_configuration());
+    let window = builder.build()?;
     sync_window_background(&window);
     Ok(window)
 }
@@ -2889,26 +2915,41 @@ fn show_main_window<R: tauri::Runtime>(app: &AppHandle<R>) {
         .store(false, Ordering::Release);
 
     // Tauri warns that creating a WebviewWindow synchronously from a window
-    // or tray callback can deadlock on Windows. Rebuild off the event handler
-    // and retry briefly while the old window finishes destroying.
+    // or tray callback can deadlock on Windows. Rebuild off the event handler,
+    // but dispatch the actual creation back to the Tauri main thread so the
+    // macOS WKWebViewConfiguration can be created on its required thread.
     let app = app.clone();
     std::thread::spawn(move || {
         for _ in 0..40 {
-            let window = match app.get_webview_window("main") {
-                Some(window) => Some(window),
-                None => match create_main_window(&app) {
-                    Ok(window) => Some(window),
-                    Err(error) => {
-                        eprintln!("重建主窗口失败：{error}");
-                        None
-                    }
-                },
-            };
-            if let Some(window) = window {
-                if present_main_window(&app, window) {
-                    state.main_window_recreating.store(false, Ordering::Release);
-                    return;
-                }
+            let (sender, receiver) = std::sync::mpsc::sync_channel(1);
+            let app_for_main = app.clone();
+            if app
+                .run_on_main_thread(move || {
+                    let window = match app_for_main.get_webview_window("main") {
+                        Some(window) => Some(window),
+                        None => match create_main_window(&app_for_main) {
+                            Ok(window) => Some(window),
+                            Err(error) => {
+                                eprintln!("重建主窗口失败：{error}");
+                                None
+                            }
+                        },
+                    };
+                    let shown = window
+                        .map(|window| present_main_window(&app_for_main, window))
+                        .unwrap_or(false);
+                    let _ = sender.send(shown);
+                })
+                .is_err()
+            {
+                break;
+            }
+            if receiver
+                .recv_timeout(Duration::from_millis(250))
+                .unwrap_or(false)
+            {
+                state.main_window_recreating.store(false, Ordering::Release);
+                return;
             }
             std::thread::sleep(Duration::from_millis(25));
         }
@@ -3090,9 +3131,8 @@ pub fn run() {
         .manage(state)
         .setup(|app| {
             setup_app_menu(app)?;
-            if let Some(window) = app.get_webview_window("main") {
-                sync_window_background(&window);
-            }
+            let window = create_main_window(app.handle())?;
+            sync_window_background(&window);
             #[cfg(feature = "tray-icon")]
             {
                 let state = app.state::<HarnessState>().inner().clone();
