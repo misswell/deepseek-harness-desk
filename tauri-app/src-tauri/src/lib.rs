@@ -665,6 +665,21 @@ fn dsh_command(app: &AppHandle) -> Option<DshCommand> {
         .map(|program| DshCommand { program })
 }
 
+// `--no-open` was added to the web profile after the first bundled dsh
+// release. Older versions never opened a browser, so omit the flag for them
+// instead of making the Harness fail on an unknown option.
+fn dsh_supports_no_open(version: &str) -> bool {
+    compare_versions(version, "0.1.0-rc.8") != VersionOrdering::Less
+}
+
+fn dsh_supports_no_open_for_command(command: &DshCommand, app: &AppHandle) -> bool {
+    managed_dsh_version_paths(Some(app))
+        .into_iter()
+        .find(|(_, path)| dsh_executable(path) == command.program)
+        .map(|(version, _)| dsh_supports_no_open(&version))
+        .unwrap_or(true)
+}
+
 fn is_managed_harness_command(
     command: &str,
     executable_path: &Path,
@@ -672,9 +687,8 @@ fn is_managed_harness_command(
     port_end: u16,
 ) -> bool {
     // dsh used the positional `web` profile in older releases, while newer
-    // releases use the canonical `--profile web` form and removed
-    // `--no-open`. Recognize both shapes so orphan cleanup keeps working
-    // across an in-place dsh update.
+    // releases use the canonical `--profile web` form. Recognize both shapes
+    // so orphan cleanup keeps working across an in-place dsh update.
     let executable = executable_path.to_string_lossy();
     let legacy_marker = format!("{executable} web --port ");
     let profile_marker = format!("{executable} --profile web --port ");
@@ -818,6 +832,19 @@ fn process_path(program: &Path, app: &AppHandle) -> String {
         .unwrap_or_default()
 }
 
+fn dsh_web_arguments(port: u16, no_open_supported: bool) -> Vec<String> {
+    let mut arguments = vec![
+        "--profile".to_string(),
+        "web".to_string(),
+        "--port".to_string(),
+        port.to_string(),
+    ];
+    if no_open_supported {
+        arguments.push("--no-open".to_string());
+    }
+    arguments
+}
+
 fn spawn_dsh(command: &DshCommand, port: u16, app: &AppHandle) -> std::io::Result<Child> {
     let is_windows_script = cfg!(windows)
         && command
@@ -842,8 +869,10 @@ fn spawn_dsh(command: &DshCommand, port: u16, app: &AppHandle) -> std::io::Resul
         .map(|existing| format!("{existing} --max-old-space-size=1024"))
         .unwrap_or_else(|_| "--max-old-space-size=1024".to_string());
 
+    let no_open_supported = dsh_supports_no_open_for_command(command, app);
+    let arguments = dsh_web_arguments(port, no_open_supported);
     process
-        .args(["--profile", "web", "--port", &port.to_string()])
+        .args(&arguments)
         .current_dir(home_directory().unwrap_or_else(|| PathBuf::from(".")))
         .env("PATH", process_path(&command.program, app))
         .env("NODE_OPTIONS", node_options)
@@ -3346,6 +3375,27 @@ mod tests {
     }
 
     #[test]
+    fn harness_web_command_uses_profile_mode_without_opening_browser() {
+        assert_eq!(
+            dsh_web_arguments(3080, true),
+            vec![
+                "--profile",
+                "web",
+                "--port",
+                "3080",
+                "--no-open",
+            ]
+        );
+        assert_eq!(
+            dsh_web_arguments(3080, false),
+            vec!["--profile", "web", "--port", "3080"]
+        );
+        assert!(!dsh_supports_no_open("0.1.0-rc.7"));
+        assert!(dsh_supports_no_open("0.1.0-rc.8"));
+        assert!(dsh_supports_no_open("0.1.1-rc.1"));
+    }
+
+    #[test]
     fn managed_harness_command_requires_exact_path_and_port() {
         let executable = Path::new(
             "/Users/example/Library/Application Support/DeepSeek Harness Desk/runtime/dsh/0.1.0-rc.7/node_modules/.bin/dsh",
@@ -3364,6 +3414,18 @@ mod tests {
         ));
         assert!(is_managed_harness_command(
             "node /Users/example/Library/Application Support/DeepSeek Harness Desk/runtime/dsh/0.1.0-rc.7/node_modules/.bin/dsh web --port 3080 --no-open",
+            executable,
+            PORT_START,
+            PORT_END
+        ));
+        assert!(is_managed_harness_command(
+            "node /Users/example/Library/Application Support/DeepSeek Harness Desk/runtime/dsh/0.1.0-rc.7/node_modules/.bin/dsh --profile web --port 3080",
+            executable,
+            PORT_START,
+            PORT_END
+        ));
+        assert!(is_managed_harness_command(
+            "node /Users/example/Library/Application Support/DeepSeek Harness Desk/runtime/dsh/0.1.0-rc.7/node_modules/.bin/dsh --profile web --port 3080 --no-open",
             executable,
             PORT_START,
             PORT_END
