@@ -19,6 +19,7 @@ const invoke = tauri?.core?.invoke;
 const listen = tauri?.event?.listen;
 const currentWebview = tauri?.webviewWindow?.getCurrentWebviewWindow?.() || null;
 const ZOOM_STORAGE_KEY = "uiZoom";
+const DOCK_ICON_VARIANT_STORAGE_KEY = "dockIconVariant";
 
 const elements = {
   frameContainer: document.querySelector("#frame-container"),
@@ -53,6 +54,7 @@ const elements = {
   launchAtLoginToggle: document.querySelector("#launch-at-login-toggle"),
   restoreLastWindowToggle: document.querySelector("#restore-last-window-toggle"),
   dockIconToggle: document.querySelector("#dock-icon-toggle"),
+  dockIconVariantSelect: document.querySelector("#dock-icon-variant-select"),
   languageSelect: document.querySelector("#language-select"),
   appCurrentVersion: document.querySelector("#app-current-version"),
   appLatestVersion: document.querySelector("#app-latest-version"),
@@ -916,6 +918,20 @@ async function toggleDockIcon() {
   }
 }
 
+async function toggleDockIconVariant() {
+  const variant = elements.dockIconVariantSelect.value === "black" ? "black" : "blue";
+  const previousVariant = variant === "black" ? "blue" : "black";
+  localStorage.setItem(DOCK_ICON_VARIANT_STORAGE_KEY, variant);
+  try {
+    await call("set_dock_icon_variant", { variant });
+    setToast(variant === "black" ? t("toast.dockIconBlack") : t("toast.dockIconBlue"));
+  } catch (error) {
+    elements.dockIconVariantSelect.value = previousVariant;
+    localStorage.setItem(DOCK_ICON_VARIANT_STORAGE_KEY, previousVariant);
+    setToast(errorMessage(error), true);
+  }
+}
+
 async function toggleLaunchAtLogin() {
   const enabled = elements.launchAtLoginToggle.checked;
   localStorage.setItem("launchAtLogin", String(enabled));
@@ -989,6 +1005,7 @@ function bindEvents() {
   elements.launchAtLoginToggle.addEventListener("change", toggleLaunchAtLogin);
   elements.restoreLastWindowToggle.addEventListener("change", toggleRestoreLastWindow);
   elements.dockIconToggle.addEventListener("change", toggleDockIcon);
+  elements.dockIconVariantSelect.addEventListener("change", toggleDockIconVariant);
   elements.languageSelect.addEventListener("change", () => {
     void setLanguage(elements.languageSelect.value);
   });
@@ -1174,6 +1191,8 @@ async function initialize() {
   elements.launchAtLoginToggle.checked = localStorage.getItem("launchAtLogin") === "true";
   elements.restoreLastWindowToggle.checked = localStorage.getItem("restoreLastWindow") !== "false";
   elements.dockIconToggle.checked = localStorage.getItem("showDockIcon") !== "false";
+  const dockIconVariant = localStorage.getItem(DOCK_ICON_VARIANT_STORAGE_KEY) === "black" ? "black" : "blue";
+  elements.dockIconVariantSelect.value = dockIconVariant;
   elements.autoCheckAppToggle.checked = localStorage.getItem("autoCheckForUpdates") !== "false";
   elements.autoCheckDshToggle.checked = localStorage.getItem("autoCheckHarnessUpdates") !== "false";
   elements.autoInstallDshToggle.checked = localStorage.getItem("autoInstallHarnessUpdates") !== "false";
@@ -1210,6 +1229,7 @@ async function initialize() {
   if (!elements.dockIconToggle.checked) {
     await call("set_dock_visibility", { visible: false }).catch((error) => setToast(errorMessage(error), true));
   }
+  await call("set_dock_icon_variant", { variant: dockIconVariant }).catch((error) => setToast(errorMessage(error), true));
   await call("set_launch_at_login", { enabled: elements.launchAtLoginToggle.checked }).catch(() => {});
   if (elements.autoCheckAppToggle.checked) await checkAppUpdate(false);
   if (elements.autoCheckDshToggle.checked) await checkDshUpdate(false, false);

@@ -2785,6 +2785,47 @@ fn set_dock_visibility(app: AppHandle, visible: bool) -> Result<(), String> {
 }
 
 #[cfg(target_os = "macos")]
+fn apply_macos_dock_icon(use_black_variant: bool) {
+    use objc2::{AnyThread, MainThreadMarker};
+    use objc2_app_kit::{NSApplication, NSImage};
+    use objc2_foundation::NSData;
+
+    let Some(marker) = MainThreadMarker::new() else {
+        return;
+    };
+    let bytes: &'static [u8] = if use_black_variant {
+        include_bytes!("../../../Assets/DeepSeekHarnessIcon-Black-Prepared-1024.png")
+    } else {
+        include_bytes!("../../../Assets/DeepSeekHarnessIcon-Prepared-1024.png")
+    };
+    let data = NSData::with_bytes(bytes);
+    let Some(image) = NSImage::initWithData(NSImage::alloc(), &data) else {
+        return;
+    };
+    let application = NSApplication::sharedApplication(marker);
+    unsafe { application.setApplicationIconImage(Some(&image)); }
+}
+
+#[tauri::command]
+fn set_dock_icon_variant(app: AppHandle, variant: String) -> Result<(), String> {
+    let use_black_variant = match variant.as_str() {
+        "blue" => false,
+        "black" => true,
+        _ => return Err("不支持的 Dock 图标样式。".to_string()),
+    };
+
+    #[cfg(target_os = "macos")]
+    app.run_on_main_thread(move || apply_macos_dock_icon(use_black_variant))
+        .map_err(|error| error.to_string())?;
+
+    #[cfg(not(target_os = "macos"))]
+    {
+        let _ = (app, use_black_variant);
+    }
+    Ok(())
+}
+
+#[cfg(target_os = "macos")]
 fn activate_macos_application() {
     use objc2::MainThreadMarker;
     use objc2_app_kit::{NSApplication, NSApplicationActivationOptions, NSRunningApplication};
@@ -3219,6 +3260,7 @@ pub fn run() {
             window_start_dragging,
             set_memory_saver,
             set_dock_visibility,
+            set_dock_icon_variant,
             set_notification_prefs,
             notification_prefs,
             set_language,
