@@ -671,8 +671,18 @@ fn is_managed_harness_command(
     port_start: u16,
     port_end: u16,
 ) -> bool {
-    let marker = format!("{} web --port ", executable_path.to_string_lossy());
-    let Some(marker_start) = command.find(&marker) else {
+    // dsh used the positional `web` profile in older releases, while newer
+    // releases use the canonical `--profile web` form and removed
+    // `--no-open`. Recognize both shapes so orphan cleanup keeps working
+    // across an in-place dsh update.
+    let executable = executable_path.to_string_lossy();
+    let legacy_marker = format!("{executable} web --port ");
+    let profile_marker = format!("{executable} --profile web --port ");
+    let (marker, marker_start) = if let Some(start) = command.find(&profile_marker) {
+        (profile_marker.as_str(), start)
+    } else if let Some(start) = command.find(&legacy_marker) {
+        (legacy_marker.as_str(), start)
+    } else {
         return false;
     };
     if marker_start > 0
@@ -833,7 +843,7 @@ fn spawn_dsh(command: &DshCommand, port: u16, app: &AppHandle) -> std::io::Resul
         .unwrap_or_else(|_| "--max-old-space-size=1024".to_string());
 
     process
-        .args(["web", "--port", &port.to_string(), "--no-open"])
+        .args(["--profile", "web", "--port", &port.to_string()])
         .current_dir(home_directory().unwrap_or_else(|| PathBuf::from(".")))
         .env("PATH", process_path(&command.program, app))
         .env("NODE_OPTIONS", node_options)
@@ -3340,6 +3350,12 @@ mod tests {
         let executable = Path::new(
             "/Users/example/Library/Application Support/DeepSeek Harness Desk/runtime/dsh/0.1.0-rc.7/node_modules/.bin/dsh",
         );
+        assert!(is_managed_harness_command(
+            "node /Users/example/Library/Application Support/DeepSeek Harness Desk/runtime/dsh/0.1.0-rc.7/node_modules/.bin/dsh --profile web --port 3080",
+            executable,
+            PORT_START,
+            PORT_END
+        ));
         assert!(is_managed_harness_command(
             "node /Users/example/Library/Application Support/DeepSeek Harness Desk/runtime/dsh/0.1.0-rc.7/node_modules/.bin/dsh web --port 3080",
             executable,
