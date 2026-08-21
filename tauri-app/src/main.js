@@ -11,6 +11,7 @@ import {
   storedLanguagePreference,
   translate,
 } from "./i18n.js";
+import { notificationPrefsPayload } from "./notification-prefs.js";
 import { shouldShowAppUpdateBanner } from "./update-banner.js";
 
 const tauri = window.__TAURI__;
@@ -933,11 +934,11 @@ function toggleRestoreLastWindow() {
 
 async function syncNotificationPrefs() {
   try {
-    await call("set_notification_prefs", {
+    await call("set_notification_prefs", notificationPrefsPayload({
       enabled: state.notifyEnabled,
-      task_completed: state.notifyTask,
+      taskCompleted: state.notifyTask,
       interaction: state.notifyInteraction,
-    });
+    }));
   } catch (error) {
     setToast(errorMessage(error), true);
   }
