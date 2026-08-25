@@ -20,6 +20,8 @@ const listen = tauri?.event?.listen;
 const currentWebview = tauri?.webviewWindow?.getCurrentWebviewWindow?.() || null;
 const ZOOM_STORAGE_KEY = "uiZoom";
 const DOCK_ICON_VARIANT_STORAGE_KEY = "dockIconVariant";
+const THEME_STORAGE_KEY = "windowTheme";
+const systemColorScheme = window.matchMedia?.("(prefers-color-scheme: dark)") || null;
 
 const elements = {
   frameContainer: document.querySelector("#frame-container"),
@@ -177,6 +179,35 @@ function errorMessage(error) {
   } catch {
     return t("common.unknown");
   }
+}
+
+function systemTheme() {
+  return systemColorScheme?.matches ? "dark" : "light";
+}
+
+function applyColorScheme(theme = systemTheme()) {
+  const nextTheme = theme === "dark" ? "dark" : "light";
+  document.documentElement.dataset.theme = nextTheme;
+  document.documentElement.style.colorScheme = nextTheme;
+  localStorage.setItem(THEME_STORAGE_KEY, nextTheme);
+}
+
+function rememberColorScheme() {
+  const theme = document.documentElement.dataset.theme === "dark" ? "dark" : "light";
+  localStorage.setItem(THEME_STORAGE_KEY, theme);
+}
+
+function watchColorScheme() {
+  if (!systemColorScheme) return;
+  const sync = () => applyColorScheme();
+  if (systemColorScheme.addEventListener) {
+    systemColorScheme.addEventListener("change", sync);
+  } else {
+    systemColorScheme.addListener?.(sync);
+  }
+  // Keep the cached theme for the first paint, then let the system theme win
+  // once the newly created WebView has finished applying its native scheme.
+  window.setTimeout(sync, 250);
 }
 
 async function call(command, args) {
@@ -1159,6 +1190,7 @@ async function listenForOutput() {
     }
   });
   await listen("window-hidden", () => {
+    rememberColorScheme();
     state.windowHidden = true;
     state.windowFocused = false;
     cancelUnfocusUnload();
@@ -1186,6 +1218,8 @@ async function listenForOutput() {
 }
 
 async function initialize() {
+  watchColorScheme();
+  rememberColorScheme();
   state.zoom = storedZoom();
   await applyZoom(state.zoom, { persist: false });
   elements.launchAtLoginToggle.checked = localStorage.getItem("launchAtLogin") === "true";
@@ -1238,4 +1272,6 @@ async function initialize() {
   resumeStatusPolling();
 }
 
+window.addEventListener("pagehide", rememberColorScheme);
+window.addEventListener("beforeunload", rememberColorScheme);
 window.addEventListener("DOMContentLoaded", initialize);

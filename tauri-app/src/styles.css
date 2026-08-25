@@ -926,52 +926,50 @@ button:disabled {
   }
 }
 
-@media (prefers-color-scheme: dark) {
-  :root {
-    color: #f5f5f7;
-    --window: #1c1c1e;
-    --surface: #2c2c2e;
-    --surface-strong: #2c2c2e;
-    --group: #2c2c2e;
-    --sidebar: rgba(38, 38, 40, 0.96);
-    --sidebar-selected: rgba(118, 118, 128, 0.28);
-    --control: #3a3a3c;
-    --separator: rgba(235, 235, 245, 0.18);
-    --separator-light: rgba(235, 235, 245, 0.12);
-    --ink: #f5f5f7;
-    --muted: #98989d;
-    --accent: #0a84ff;
-    --accent-hover: #409cff;
-    --green: #30d158;
-    --danger: #ff453a;
-    --shadow: 0 10px 30px rgba(0, 0, 0, 0.35);
-  }
+:root[data-theme="dark"] {
+  color: #f5f5f7;
+  --window: #1c1c1e;
+  --surface: #2c2c2e;
+  --surface-strong: #2c2c2e;
+  --group: #2c2c2e;
+  --sidebar: rgba(38, 38, 40, 0.96);
+  --sidebar-selected: rgba(118, 118, 128, 0.28);
+  --control: #3a3a3c;
+  --separator: rgba(235, 235, 245, 0.18);
+  --separator-light: rgba(235, 235, 245, 0.12);
+  --ink: #f5f5f7;
+  --muted: #98989d;
+  --accent: #0a84ff;
+  --accent-hover: #409cff;
+  --green: #30d158;
+  --danger: #ff453a;
+  --shadow: 0 10px 30px rgba(0, 0, 0, 0.35);
+}
 
-  .frame-container,
-  .frame-container iframe {
-    background: #1c1c1e;
-  }
+:root[data-theme="dark"] .frame-container,
+:root[data-theme="dark"] .frame-container iframe {
+  background: #1c1c1e;
+}
 
-  .startup-status {
-    background: rgba(58, 58, 60, 0.58);
-    background: color-mix(in srgb, var(--control) 58%, transparent);
-  }
+:root[data-theme="dark"] .startup-status {
+  background: rgba(58, 58, 60, 0.58);
+  background: color-mix(in srgb, var(--control) 58%, transparent);
+}
 
-  .setting-row input[type="checkbox"] {
-    border-color: rgba(235, 235, 245, 0.16);
-    background: #636366;
-  }
+:root[data-theme="dark"] .setting-row input[type="checkbox"] {
+  border-color: rgba(235, 235, 245, 0.16);
+  background: #636366;
+}
 
-  .setting-row input[type="checkbox"]:checked {
-    border-color: var(--green);
-    background: var(--green);
-  }
+:root[data-theme="dark"] .setting-row input[type="checkbox"]:checked {
+  border-color: var(--green);
+  background: var(--green);
+}
 
-  .update-progress {
-    background: rgba(10, 132, 255, 0.13);
-  }
+:root[data-theme="dark"] .update-progress {
+  background: rgba(10, 132, 255, 0.13);
+}
 
-  .update-progress progress::-webkit-progress-bar {
-    background: rgba(235, 235, 245, 0.18);
-  }
+:root[data-theme="dark"] .update-progress progress::-webkit-progress-bar {
+  background: rgba(235, 235, 245, 0.18);
 }

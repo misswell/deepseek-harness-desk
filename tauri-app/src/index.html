@@ -5,6 +5,22 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <meta name="color-scheme" content="light dark" />
     <title>DeepSeek Harness Desk</title>
+    <script>
+      (() => {
+        try {
+          const stored = localStorage.getItem("windowTheme");
+          const theme = stored === "dark" || stored === "light"
+            ? stored
+            : window.matchMedia("(prefers-color-scheme: dark)").matches
+              ? "dark"
+              : "light";
+          document.documentElement.dataset.theme = theme;
+          document.documentElement.style.colorScheme = theme;
+        } catch {
+          // Keep the light CSS fallback if storage is unavailable.
+        }
+      })();
+    </script>
     <link rel="stylesheet" href="/styles.css" />
     <script type="module" src="/main.js" defer></script>
   </head>
