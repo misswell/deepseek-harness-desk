@@ -8,8 +8,7 @@
 
 ## 完成、验证与推送
 
-- 用户偏好：本项目每次改动完成并验证通过后，自动提交并推送到 GitHub；推送完成后在回复中附上 commit 或分支链接。
-- 普通改动不自动创建 Release 或 tag；只有用户明确要求发布时才执行正式发布流程。
+- 用户偏好：本项目每次改动完成并验证通过后，自动提交并推送到 GitHub，创建新的 patch 版本 tag 和正式 GitHub Release；推送完成后在回复中附上 commit、Release 和相关资产链接。
 - 正式发布必须使用认证签名和 Apple 公证后的包，不能把本地未公证 ZIP 当作正式发布包。
 - 每次本地编译前，删除项目根目录旧的 `build-test-*`、`build-debug-*`、`build-ui-debug`；不要删除正式发布产物目录。
 
@@ -30,6 +29,7 @@
 - `v0.3.14`：放大快捷键改为 `CmdOrCtrl+=`，最小缩放改为 0.5；发布工作流改为 arm64 优先发布、其他平台后台追加资产。
 - `v0.3.15`：修复设置页更新下载链接。
 - `v0.3.16`：修复 `dsh: command not found`，通过 `~/.local/bin/dsh` wrapper 指向内置 Node 与最新 managed dsh；arm64 DMG 已验证 Developer ID 签名和公证。
+- `v0.3.32`：修复窗口关闭 WebView 前未及时保存主题，避免深色主题重开时白屏或闪烁。
 - 历史正式版本 `v0.2.11` 至 `v0.2.17` 均以认证签名、公证、staple 和 `spctl` 校验为准；历史 Release 链接和 digest 以 GitHub 记录为准，不以单次 Actions 状态推断公证结果。
 
 ## Tauri v2 生命周期与内存
