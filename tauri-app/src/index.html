@@ -11,7 +11,7 @@
   <body>
     <main class="app-shell">
       <section class="harness-surface" aria-label="DeepSeek Harness">
-        <div class="frame-container hidden" id="frame-container">
+        <div class="frame-container" id="frame-container">
           <div class="frame-loading" id="frame-loading" data-i18n="frame.loading">正在加载 Harness 页面…</div>
           <iframe
             id="harness-frame"
@@ -20,7 +20,7 @@
           ></iframe>
         </div>
 
-        <section class="startup-view" id="startup-view" aria-live="polite">
+        <section class="startup-view hidden" id="startup-view" aria-live="polite">
           <div class="startup-card">
             <div class="brand-mark" aria-hidden="true">H</div>
             <div class="spinner" id="startup-spinner" aria-hidden="true"></div>
