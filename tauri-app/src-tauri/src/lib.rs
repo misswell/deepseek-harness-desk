@@ -437,15 +437,6 @@ fn managed_dsh_version(app: Option<&AppHandle>) -> Option<String> {
         .map(|(version, _)| version)
 }
 
-/// The managed dsh version a given program path belongs to, or `None` when the
-/// program comes from `DSH_BIN` or the system PATH.
-fn managed_dsh_version_of(program: &Path, app: Option<&AppHandle>) -> Option<String> {
-    managed_dsh_version_paths(app)
-        .into_iter()
-        .find(|(_, dir)| program.starts_with(dir))
-        .map(|(version, _)| version)
-}
-
 fn managed_node_root(app: Option<&AppHandle>) -> Option<PathBuf> {
     let mut versions = Vec::new();
     for runtime_root in runtime_roots(app) {

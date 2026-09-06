@@ -30,6 +30,7 @@
 - `v0.3.15`：修复设置页更新下载链接。
 - `v0.3.16`：修复 `dsh: command not found`，通过 `~/.local/bin/dsh` wrapper 指向内置 Node 与最新 managed dsh；arm64 DMG 已验证 Developer ID 签名和公证。
 - `v0.3.32`：修复窗口关闭 WebView 前未及时保存主题，避免深色主题重开时白屏或闪烁。
+- `v0.3.33`：兼容 dsh 0.1.2+ token 鉴权：就绪检查改为任意 HTTP 响应即就绪（不再理解 dsh 登录流程），后台兑换 launch token 并把 cookie 注入 WKHTTPCookieStore（WebKit 会丢弃跨域 iframe 内的 Set-Cookie），事件监听迁移到 `/api/remote.mux` 并回退旧双端点，dsh 启动加 `--no-open`。
 - 历史正式版本 `v0.2.11` 至 `v0.2.17` 均以认证签名、公证、staple 和 `spctl` 校验为准；历史 Release 链接和 digest 以 GitHub 记录为准，不以单次 Actions 状态推断公证结果。
 
 ## Tauri v2 生命周期与内存
