@@ -896,16 +896,6 @@ fn spawn_dsh(command: &DshCommand, port: u16, app: &AppHandle) -> std::io::Resul
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
 
-    // Newer dsh releases open the Web UI in the system browser unless told
-    // not to; the Desk app embeds the UI itself, so a stray browser tab is
-    // just noise. The flag was removed in one intermediate release, so only
-    // send it when the managed version is known to accept it.
-    if managed_dsh_version_of(&command.program, Some(app))
-        .is_some_and(|version| compare_versions(&version, "0.1.1-rc.2") != VersionOrdering::Less)
-    {
-        process.arg("--no-open");
-    }
-
     #[cfg(unix)]
     {
         use std::os::unix::process::CommandExt;
@@ -2324,9 +2314,6 @@ async fn start_harness_inner(
 
     let client = reqwest::Client::builder()
         .timeout(Duration::from_millis(1200))
-        // Keep the raw 303 from the token exchange so the auth cookie can be
-        // captured from the response headers.
-        .redirect(reqwest::redirect::Policy::none())
         .build()
         .map_err(|error| format!("创建健康检查客户端失败：{error}"))?;
     let deadline = Instant::now() + Duration::from_secs(30);
@@ -2339,60 +2326,13 @@ async fn start_harness_inner(
             return Err(message);
         }
 
-        let mut ready = false;
-        let token = state.token.lock().ok().and_then(|token| token.clone());
-        match token {
-            // Token-authenticated dsh (0.1.2+): exchange the launch token for
-            // the auth cookie, then confirm the cookie actually grants access.
-            Some(token) => {
-                if let Ok(response) = client
-                    .get(format!("{url}/?token={token}"))
-                    .send()
-                    .await
-                {
-                    if response.status() == reqwest::StatusCode::SEE_OTHER {
-                        let cookie = response
-                            .headers()
-                            .get(reqwest::header::SET_COOKIE)
-                            .and_then(|value| value.to_str().ok())
-                            .and_then(|value| value.split(';').next())
-                            .map(str::to_string);
-                        if let Some(cookie) = cookie {
-                            if let Ok(verify) =
-                                client.get(&url).header("cookie", &cookie).send().await
-                            {
-                                if verify.status().is_success() {
-                                    if let Ok(mut guard) = state.auth_cookie.lock() {
-                                        *guard = Some(cookie);
-                                    }
-                                    ready = true;
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-            // No token seen yet. Any 2xx means a legacy dsh without token
-            // authentication; a 401 means the server is up and we are still
-            // waiting for the launch token to arrive on stdout.
-            None => {
-                if let Ok(response) = client.get(&url).send().await {
-                    if response.status().is_success() {
-                        ready = true;
-                    }
-                }
-            }
-        }
-
-        if ready {
+        // The Desk is only a shell around a URL: any HTTP answer proves the
+        // server is up and can be shown — 2xx, redirect and 401 alike. The
+        // page's own authentication (token, cookie, whatever a new dsh ships)
+        // is its business and must never gate the shell's readiness again.
+        if client.get(&url).send().await.is_ok() {
             emit_log(app, &state.logs, "desk", format!("Harness 已就绪：{url}"));
-            #[cfg(target_os = "macos")]
-            if let Some(window) = app.get_webview_window("main") {
-                let cookie = state.auth_cookie.lock().ok().and_then(|cookie| cookie.clone());
-                if let Some(cookie) = cookie {
-                    inject_harness_auth_cookie(&window, &cookie);
-                }
-            }
+            spawn_harness_cookie_mint(app.clone(), state.clone(), port);
             return Ok(snapshot(state));
         }
 
@@ -2408,11 +2348,87 @@ async fn start_harness_inner(
     }
 }
 
+/// Best-effort login on behalf of the embedded WebView.
+///
+/// Token-authenticated dsh only mints its auth cookie when the root URL is
+/// opened with the launch token, and WebKit drops cookies set inside the
+/// cross-origin Harness iframe. This waits for the token printed on stdout,
+/// performs the exchange natively and plants the resulting cookie into the
+/// WebView's cookie store. Every step is opportunistic: when no token shows
+/// up (legacy dsh) or the exchange fails, the page still loads and may work
+/// on its own — this must never block or fail the startup path.
+fn spawn_harness_cookie_mint(app: AppHandle, state: HarnessState, port: u16) {
+    tauri::async_runtime::spawn(async move {
+        let client = match reqwest::Client::builder()
+            .timeout(Duration::from_millis(1200))
+            // Keep the raw exchange response so its cookie can be captured.
+            .redirect(reqwest::redirect::Policy::none())
+            .build()
+        {
+            Ok(client) => client,
+            Err(_) => return,
+        };
+
+        // The token is printed by dsh right before the server starts, but
+        // stdout arrives asynchronously; give it a generous window.
+        let token = {
+            let deadline = Instant::now() + Duration::from_secs(30);
+            loop {
+                let token = state.token.lock().ok().and_then(|token| token.clone());
+                if token.is_some() || Instant::now() >= deadline {
+                    break token;
+                }
+                tokio::time::sleep(Duration::from_millis(400)).await;
+            }
+        };
+        let Some(token) = token else {
+            return;
+        };
+
+        let login_url = format!("http://127.0.0.1:{port}/?token={token}");
+        for _ in 0..6 {
+            if let Ok(response) = client.get(&login_url).send().await {
+                let cookie = response
+                    .headers()
+                    .get(reqwest::header::SET_COOKIE)
+                    .and_then(|value| value.to_str().ok())
+                    .and_then(|value| value.split(';').next())
+                    .map(str::to_string);
+                if let Some(cookie) = cookie {
+                    if let Ok(mut guard) = state.auth_cookie.lock() {
+                        *guard = Some(cookie);
+                    }
+                    if let Some(window) = app.get_webview_window("main") {
+                        let cookie = state
+                            .auth_cookie
+                            .lock()
+                            .ok()
+                            .and_then(|cookie| cookie.clone());
+                        if let Some(cookie) = cookie {
+                            inject_harness_auth_cookie(&window, &cookie);
+                            emit_log(
+                                &app,
+                                &state.logs,
+                                "desk",
+                                "已写入 Harness 登录凭据".to_string(),
+                            );
+                        }
+                    }
+                    return;
+                }
+            }
+            tokio::time::sleep(Duration::from_millis(500)).await;
+        }
+    });
+}
+
 const MAX_SEEN_INTERACTIONS: usize = 256;
 
-/// Start the background watcher that tails the Harness's live event streams
-/// (`/api/events.mux` + `/api/events.host`) and turns "needs interaction" and
-/// "task completed" into a dock badge and a system notification.
+/// Start the background watcher that tails the Harness's live event stream and
+/// turns "needs interaction" and "task completed" into a dock badge and a
+/// system notification. dsh 0.1.2+ serves a single authenticated
+/// `/api/remote.mux`; older releases expose the unauthenticated
+/// `events.mux` + `events.host` pair.
 fn spawn_task_watcher(app: AppHandle, state: HarnessState) {
     tauri::async_runtime::spawn(async move {
         let mut retry_delay = Duration::from_millis(1500);
