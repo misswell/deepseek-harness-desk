@@ -12,7 +12,8 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use futures_util::StreamExt;
-use tokio_tungstenite::connect_async;
+use tokio::net::TcpStream;
+use tokio_tungstenite::{connect_async, MaybeTlsStream, WebSocketStream};
 use tauri_plugin_notification::NotificationExt;
 
 #[cfg(target_os = "macos")]
@@ -111,6 +112,12 @@ struct HarnessState {
     lifecycle: Arc<Mutex<()>>,
     child: Arc<Mutex<Option<Child>>>,
     port: Arc<AtomicU16>,
+    // Launch token printed by token-authenticated dsh releases (0.1.2+). The
+    // embedded WebView and the event watcher both need it to log in.
+    token: Arc<Mutex<Option<String>>>,
+    // "name=value" auth cookie minted by dsh after the token exchange; sent
+    // with event-watcher WebSocket requests.
+    auth_cookie: Arc<Mutex<Option<String>>>,
     memory_saver: Arc<AtomicBool>,
     keep_alive_after_window_destroy: Arc<AtomicBool>,
     main_window_recreating: Arc<AtomicBool>,
@@ -427,6 +434,15 @@ fn managed_dsh_version(app: Option<&AppHandle>) -> Option<String> {
     managed_dsh_version_paths(app)
         .into_iter()
         .find(|(_, path)| is_executable(&executable(path)))
+        .map(|(version, _)| version)
+}
+
+/// The managed dsh version a given program path belongs to, or `None` when the
+/// program comes from `DSH_BIN` or the system PATH.
+fn managed_dsh_version_of(program: &Path, app: Option<&AppHandle>) -> Option<String> {
+    managed_dsh_version_paths(app)
+        .into_iter()
+        .find(|(_, dir)| program.starts_with(dir))
         .map(|(version, _)| version)
 }
 
@@ -879,6 +895,16 @@ fn spawn_dsh(command: &DshCommand, port: u16, app: &AppHandle) -> std::io::Resul
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
+
+    // Newer dsh releases open the Web UI in the system browser unless told
+    // not to; the Desk app embeds the UI itself, so a stray browser tab is
+    // just noise. The flag was removed in one intermediate release, so only
+    // send it when the managed version is known to accept it.
+    if managed_dsh_version_of(&command.program, Some(app))
+        .is_some_and(|version| compare_versions(&version, "0.1.1-rc.2") != VersionOrdering::Less)
+    {
+        process.arg("--no-open");
+    }
 
     #[cfg(unix)]
     {
@@ -1995,6 +2021,7 @@ fn spawn_output_reader<R>(
     app: AppHandle,
     logs: Arc<Mutex<VecDeque<HarnessLog>>>,
     stream: &'static str,
+    token_sink: Option<Arc<Mutex<Option<String>>>>,
 ) where
     R: Read + Send + 'static,
 {
@@ -2008,6 +2035,13 @@ fn spawn_output_reader<R>(
                 Ok(_) => {
                     let message = line.trim_end_matches(['\r', '\n']).to_string();
                     if !message.is_empty() {
+                        if let Some(sink) = &token_sink {
+                            if let Some(token) = extract_launch_token(&message) {
+                                if let Ok(mut guard) = sink.lock() {
+                                    *guard = Some(token);
+                                }
+                            }
+                        }
                         emit_log(&app, &logs, stream, message);
                     }
                 }
@@ -2018,6 +2052,32 @@ fn spawn_output_reader<R>(
             }
         }
     });
+}
+
+/// Extract the web UI launch token from a dsh stdout line such as
+/// `dsh web: http://127.0.0.1:3080/?token=abc123`. Newer dsh releases gate
+/// the web UI behind token authentication, so the app must capture the token
+/// to log in on behalf of the embedded WebView and the event watcher.
+fn extract_launch_token(line: &str) -> Option<String> {
+    const MARKER: &str = "/?token=";
+    let mut search_from = 0;
+    while let Some(relative) = line[search_from..].find(MARKER) {
+        let token_start = search_from + relative + MARKER.len();
+        let token: String = line[token_start..]
+            .chars()
+            .take_while(|character| {
+                character.is_ascii_alphanumeric() || *character == '-' || *character == '_'
+            })
+            .collect();
+        if !token.is_empty() {
+            return Some(token);
+        }
+        search_from = token_start;
+        if search_from >= line.len() {
+            break;
+        }
+    }
+    None
 }
 
 fn set_last_error(state: &HarnessState, message: Option<String>) {
@@ -2072,11 +2132,23 @@ fn snapshot(state: &HarnessState) -> HarnessStatus {
             if let Ok(mut path) = state.dsh_path.lock() {
                 *path = None;
             }
+            if let Ok(mut token) = state.token.lock() {
+                *token = None;
+            }
+            if let Ok(mut cookie) = state.auth_cookie.lock() {
+                *cookie = None;
+            }
         }
     }
 
     let port = state.port.load(Ordering::Relaxed);
-    let url = running.then(|| format!("http://127.0.0.1:{port}"));
+    let token = state.token.lock().ok().and_then(|token| token.clone());
+    // Token-authenticated dsh only mints its auth cookie when the root URL is
+    // opened with the launch token, so hand the WebView the authenticated URL.
+    let url = running.then(|| match token {
+        Some(token) => format!("http://127.0.0.1:{port}/?token={token}"),
+        None => format!("http://127.0.0.1:{port}"),
+    });
     let dsh_path = if running {
         state.dsh_path.lock().ok().and_then(|path| {
             path.as_ref()
@@ -2127,6 +2199,12 @@ fn stop_harness_inner(app: &AppHandle, state: &HarnessState) {
     if let Ok(mut path) = state.dsh_path.lock() {
         *path = None;
     }
+    if let Ok(mut token) = state.token.lock() {
+        *token = None;
+    }
+    if let Ok(mut cookie) = state.auth_cookie.lock() {
+        *cookie = None;
+    }
     set_exit_code(state, None);
 
     if let Some(pid) = stopped_pid {
@@ -2156,6 +2234,14 @@ async fn start_harness_inner(
 
     set_last_error(state, None);
     set_exit_code(state, None);
+    // Each dsh process mints a fresh launch token; a stale one from a previous
+    // run must never leak into the new process's authenticated URL.
+    if let Ok(mut guard) = state.token.lock() {
+        *guard = None;
+    }
+    if let Ok(mut guard) = state.auth_cookie.lock() {
+        *guard = None;
+    }
 
     let Some(command) = dsh_command(app) else {
         let message = "未找到 dsh 可执行文件。请先点击“安装并启动”，或设置 DSH_BIN 环境变量。";
@@ -2211,10 +2297,16 @@ async fn start_harness_inner(
     }
 
     if let Some(stdout) = stdout {
-        spawn_output_reader(stdout, app.clone(), state.logs.clone(), "stdout");
+        spawn_output_reader(
+            stdout,
+            app.clone(),
+            state.logs.clone(),
+            "stdout",
+            Some(state.token.clone()),
+        );
     }
     if let Some(stderr) = stderr {
-        spawn_output_reader(stderr, app.clone(), state.logs.clone(), "stderr");
+        spawn_output_reader(stderr, app.clone(), state.logs.clone(), "stderr", None);
     }
 
     // The process is now registered. Release the guard while waiting for the
@@ -2232,6 +2324,9 @@ async fn start_harness_inner(
 
     let client = reqwest::Client::builder()
         .timeout(Duration::from_millis(1200))
+        // Keep the raw 303 from the token exchange so the auth cookie can be
+        // captured from the response headers.
+        .redirect(reqwest::redirect::Policy::none())
         .build()
         .map_err(|error| format!("创建健康检查客户端失败：{error}"))?;
     let deadline = Instant::now() + Duration::from_secs(30);
@@ -2244,11 +2339,61 @@ async fn start_harness_inner(
             return Err(message);
         }
 
-        if let Ok(response) = client.get(&url).send().await {
-            if response.status().is_success() {
-                emit_log(app, &state.logs, "desk", format!("Harness 已就绪：{url}"));
-                return Ok(snapshot(state));
+        let mut ready = false;
+        let token = state.token.lock().ok().and_then(|token| token.clone());
+        match token {
+            // Token-authenticated dsh (0.1.2+): exchange the launch token for
+            // the auth cookie, then confirm the cookie actually grants access.
+            Some(token) => {
+                if let Ok(response) = client
+                    .get(format!("{url}/?token={token}"))
+                    .send()
+                    .await
+                {
+                    if response.status() == reqwest::StatusCode::SEE_OTHER {
+                        let cookie = response
+                            .headers()
+                            .get(reqwest::header::SET_COOKIE)
+                            .and_then(|value| value.to_str().ok())
+                            .and_then(|value| value.split(';').next())
+                            .map(str::to_string);
+                        if let Some(cookie) = cookie {
+                            if let Ok(verify) =
+                                client.get(&url).header("cookie", &cookie).send().await
+                            {
+                                if verify.status().is_success() {
+                                    if let Ok(mut guard) = state.auth_cookie.lock() {
+                                        *guard = Some(cookie);
+                                    }
+                                    ready = true;
+                                }
+                            }
+                        }
+                    }
+                }
             }
+            // No token seen yet. Any 2xx means a legacy dsh without token
+            // authentication; a 401 means the server is up and we are still
+            // waiting for the launch token to arrive on stdout.
+            None => {
+                if let Ok(response) = client.get(&url).send().await {
+                    if response.status().is_success() {
+                        ready = true;
+                    }
+                }
+            }
+        }
+
+        if ready {
+            emit_log(app, &state.logs, "desk", format!("Harness 已就绪：{url}"));
+            #[cfg(target_os = "macos")]
+            if let Some(window) = app.get_webview_window("main") {
+                let cookie = state.auth_cookie.lock().ok().and_then(|cookie| cookie.clone());
+                if let Some(cookie) = cookie {
+                    inject_harness_auth_cookie(&window, &cookie);
+                }
+            }
+            return Ok(snapshot(state));
         }
 
         if Instant::now() >= deadline {
@@ -2270,37 +2415,84 @@ const MAX_SEEN_INTERACTIONS: usize = 256;
 /// "task completed" into a dock badge and a system notification.
 fn spawn_task_watcher(app: AppHandle, state: HarnessState) {
     tauri::async_runtime::spawn(async move {
+        let mut retry_delay = Duration::from_millis(1500);
         loop {
             let port = state.port.load(Ordering::Relaxed);
             if port == 0 {
                 tokio::time::sleep(Duration::from_secs(1)).await;
                 continue;
             }
-            let base = format!("ws://127.0.0.1:{port}");
-            let _ = watch_harness_events(
-                &app,
-                &state,
-                &format!("{base}/api/events.mux"),
-                &format!("{base}/api/events.host"),
-            )
-            .await;
-            tokio::time::sleep(Duration::from_millis(1500)).await;
+            let outcome = watch_harness_events(&app, &state, port).await;
+            // A dead or incompatible event stream must not turn into a tight
+            // reconnect loop against the Harness backend.
+            retry_delay = match outcome {
+                Ok(()) => Duration::from_millis(1500),
+                Err(_) => (retry_delay * 2).min(Duration::from_secs(30)),
+            };
+            tokio::time::sleep(retry_delay).await;
         }
     });
 }
 
-/// Keep both WebSocket downlinks open for as long as they last. Returns when
-/// either stream closes or fails; the caller reconnects after a short pause.
+/// Connect a Harness event WebSocket, attaching the auth cookie minted by the
+/// token exchange when token-authenticated dsh is in charge.
+async fn connect_harness_ws(
+    url: &str,
+    cookie: Option<&str>,
+) -> Result<WebSocketStream<MaybeTlsStream<TcpStream>>, String> {
+    use tokio_tungstenite::tungstenite::client::IntoClientRequest;
+    use tokio_tungstenite::tungstenite::http::header::{COOKIE, HeaderValue};
+
+    let mut request = url.into_client_request().map_err(|error| error.to_string())?;
+    if let Some(cookie) = cookie {
+        let value = HeaderValue::from_str(cookie).map_err(|error| error.to_string())?;
+        request.headers_mut().insert(COOKIE, value);
+    }
+    let (stream, _) = connect_async(request).await.map_err(|error| error.to_string())?;
+    Ok(stream)
+}
+
+/// Keep the Harness event stream(s) open for as long as they last. Returns
+/// when the stream closes or fails; the caller reconnects after a pause.
+///
+/// dsh 0.1.2+ serves a single authenticated mux endpoint; older releases
+/// expose the unauthenticated `events.mux` + `events.host` pair, which stays
+/// supported here as a fallback.
 async fn watch_harness_events(
     app: &AppHandle,
     state: &HarnessState,
-    mux_url: &str,
-    host_url: &str,
+    port: u16,
 ) -> Result<(), String> {
-    let (mut mux, _) = connect_async(mux_url).await.map_err(|error| error.to_string())?;
-    let (mut host, _) = connect_async(host_url).await.map_err(|error| error.to_string())?;
-    let mut running_sessions = HashMap::new();
+    let cookie = state
+        .auth_cookie
+        .lock()
+        .ok()
+        .and_then(|cookie| cookie.clone());
+    let base = format!("ws://127.0.0.1:{port}");
     let mut seen_interactions = VecDeque::new();
+
+    if let Ok(mut mux) =
+        connect_harness_ws(&format!("{base}/api/remote.mux"), cookie.as_deref()).await
+    {
+        while let Some(frame) = mux.next().await {
+            match frame {
+                Ok(message) => {
+                    touch_harness_activity(state);
+                    if let Ok(text) = message.to_text() {
+                        handle_mux_frame(app, state, text, &mut seen_interactions);
+                    }
+                }
+                Err(error) => return Err(error.to_string()),
+            }
+        }
+        return Ok(());
+    }
+
+    let mut mux =
+        connect_harness_ws(&format!("{base}/api/events.mux"), cookie.as_deref()).await?;
+    let mut host =
+        connect_harness_ws(&format!("{base}/api/events.host"), cookie.as_deref()).await?;
+    let mut running_sessions = HashMap::new();
     loop {
         tokio::select! {
             frame = mux.next() => {
@@ -2898,6 +3090,61 @@ fn main_window_webview_configuration() -> Retained<WKWebViewConfiguration> {
     config
 }
 
+/// Plant the dsh auth cookie into the WebView's HTTP cookie store.
+///
+/// WKWebView's ITP drops cookies that a cross-origin iframe tries to set, so
+/// the token exchange inside the embedded Harness page can never mint its own
+/// session and the page stays on dsh's 401 screen. The readiness check
+/// performs the exchange natively instead; WebKit does send host-injected
+/// cookies with the iframe's requests, which unlocks the page.
+#[cfg(target_os = "macos")]
+fn inject_harness_auth_cookie<R: tauri::Runtime>(window: &WebviewWindow<R>, cookie: &str) {
+    use objc2::runtime::{AnyObject, ProtocolObject};
+    use objc2_foundation::{NSDictionary, NSMutableDictionary, NSString, NSHTTPCookie};
+    use objc2_web_kit::WKWebView;
+
+    // The header is `name=value; attributes...`; only the pair is sent back.
+    let Some(pair) = cookie.split(';').next() else {
+        return;
+    };
+    let Some((name, value)) = pair.split_once('=') else {
+        return;
+    };
+    let (name, value) = (name.to_string(), value.to_string());
+
+    let _ = window.with_webview(move |webview| {
+        let pointer = webview.inner() as *mut WKWebView;
+        let Some(web_view) = (unsafe { pointer.as_ref() }) else {
+            return;
+        };
+        let data_store = unsafe { web_view.configuration().websiteDataStore() };
+        let cookie_store = unsafe { data_store.httpCookieStore() };
+
+        let name = NSString::from_str(&name);
+        let value = NSString::from_str(&value);
+        let properties = NSMutableDictionary::<NSString, AnyObject>::dictionaryWithCapacity(4);
+        unsafe {
+            properties.setObject_forKey(&value, ProtocolObject::from_ref(ns_string!("Value")));
+            properties.setObject_forKey(
+                ns_string!("127.0.0.1"),
+                ProtocolObject::from_ref(ns_string!("Domain")),
+            );
+            properties.setObject_forKey(
+                ns_string!("/"),
+                ProtocolObject::from_ref(ns_string!("Path")),
+            );
+            properties.setObject_forKey(&name, ProtocolObject::from_ref(ns_string!("Name")));
+        }
+        let properties: &NSDictionary<NSString, AnyObject> = properties.as_ref();
+        if let Some(cookie) = unsafe { NSHTTPCookie::cookieWithProperties(properties) } {
+            unsafe { cookie_store.setCookie_completionHandler(&cookie, None) };
+        }
+    });
+}
+
+#[cfg(not(target_os = "macos"))]
+fn inject_harness_auth_cookie<R: tauri::Runtime>(_window: &WebviewWindow<R>, _cookie: &str) {}
+
 fn create_main_window<R: tauri::Runtime>(app: &AppHandle<R>) -> tauri::Result<WebviewWindow<R>> {
     let config = app
         .config()
@@ -2965,6 +3212,13 @@ fn present_main_window<R: tauri::Runtime>(
     state
         .keep_alive_after_window_destroy
         .store(false, Ordering::Release);
+    // A freshly recreated WebView shares the persistent cookie store, but the
+    // Harness cookie may have been minted while this window was destroyed;
+    // re-plant it so the embedded page can authenticate again.
+    #[cfg(target_os = "macos")]
+    if let Some(cookie) = state.auth_cookie.lock().ok().and_then(|cookie| cookie.clone()) {
+        inject_harness_auth_cookie(&window, &cookie);
+    }
     true
 }
 
@@ -3188,6 +3442,8 @@ pub fn run() {
         keep_alive_after_window_destroy: Arc::new(AtomicBool::new(false)),
         main_window_recreating: Arc::new(AtomicBool::new(false)),
         dsh_path: Arc::new(Mutex::new(None)),
+        token: Arc::new(Mutex::new(None)),
+        auth_cookie: Arc::new(Mutex::new(None)),
         logs: Arc::new(Mutex::new(VecDeque::new())),
         last_error: Arc::new(Mutex::new(None)),
         last_exit_code: Arc::new(Mutex::new(None)),
@@ -3344,6 +3600,29 @@ pub fn run() {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn extract_launch_token_parses_dsh_web_line() {
+        assert_eq!(
+            extract_launch_token("dsh web: http://127.0.0.1:3080/?token=I3p7Je_ZBcUDP-N4oyRa-0tmtOe7ePeq0mzO16PX7eE"),
+            Some("I3p7Je_ZBcUDP-N4oyRa-0tmtOe7ePeq0mzO16PX7eE".to_string())
+        );
+    }
+
+    #[test]
+    fn extract_launch_token_ignores_lines_without_token() {
+        assert_eq!(extract_launch_token("dsh web: http://127.0.0.1:3080"), None);
+        assert_eq!(extract_launch_token("added 521 packages in 2m"), None);
+        assert_eq!(extract_launch_token(""), None);
+    }
+
+    #[test]
+    fn extract_launch_token_stops_at_non_token_characters() {
+        assert_eq!(
+            extract_launch_token("dsh web: http://127.0.0.1:3090/?token=abcDEF-123_ tail"),
+            Some("abcDEF-123_".to_string())
+        );
+    }
 
     #[test]
     fn window_background_colors_follow_system_theme() {
