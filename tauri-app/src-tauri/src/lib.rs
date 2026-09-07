@@ -2396,13 +2396,17 @@ fn spawn_harness_cookie_mint(app: AppHandle, state: HarnessState, port: u16) {
                             .ok()
                             .and_then(|cookie| cookie.clone());
                         if let Some(cookie) = cookie {
-                            inject_harness_auth_cookie(&window, &cookie);
-                            emit_log(
-                                &app,
-                                &state.logs,
-                                "desk",
-                                "已写入 Harness 登录凭据".to_string(),
-                            );
+                            let app_for_event = app.clone();
+                            let state_for_log = state.clone();
+                            inject_harness_auth_cookie(&window, &cookie, move || {
+                                emit_log(
+                                    &app_for_event,
+                                    &state_for_log.logs,
+                                    "desk",
+                                    "已写入 Harness 登录凭据".to_string(),
+                                );
+                                let _ = app_for_event.emit("harness-auth-ready", ());
+                            });
                         }
                     }
                     return;
@@ -3105,7 +3109,12 @@ fn main_window_webview_configuration() -> Retained<WKWebViewConfiguration> {
 /// performs the exchange natively instead; WebKit does send host-injected
 /// cookies with the iframe's requests, which unlocks the page.
 #[cfg(target_os = "macos")]
-fn inject_harness_auth_cookie<R: tauri::Runtime>(window: &WebviewWindow<R>, cookie: &str) {
+fn inject_harness_auth_cookie<R: tauri::Runtime>(
+    window: &WebviewWindow<R>,
+    cookie: &str,
+    on_stored: impl Fn() + Send + 'static,
+) {
+    use block2::RcBlock;
     use objc2::runtime::{AnyObject, ProtocolObject};
     use objc2_foundation::{NSDictionary, NSMutableDictionary, NSString, NSHTTPCookie};
     use objc2_web_kit::WKWebView;
@@ -3144,13 +3153,21 @@ fn inject_harness_auth_cookie<R: tauri::Runtime>(window: &WebviewWindow<R>, cook
         }
         let properties: &NSDictionary<NSString, AnyObject> = properties.as_ref();
         if let Some(cookie) = unsafe { NSHTTPCookie::cookieWithProperties(properties) } {
-            unsafe { cookie_store.setCookie_completionHandler(&cookie, None) };
+            let completion = RcBlock::new(on_stored);
+            unsafe {
+                cookie_store.setCookie_completionHandler(&cookie, Some(&completion));
+            }
         }
     });
 }
 
 #[cfg(not(target_os = "macos"))]
-fn inject_harness_auth_cookie<R: tauri::Runtime>(_window: &WebviewWindow<R>, _cookie: &str) {}
+fn inject_harness_auth_cookie<R: tauri::Runtime>(
+    _window: &WebviewWindow<R>,
+    _cookie: &str,
+    _on_stored: impl Fn() + Send + 'static,
+) {
+}
 
 fn create_main_window<R: tauri::Runtime>(app: &AppHandle<R>) -> tauri::Result<WebviewWindow<R>> {
     let config = app
@@ -3224,7 +3241,10 @@ fn present_main_window<R: tauri::Runtime>(
     // re-plant it so the embedded page can authenticate again.
     #[cfg(target_os = "macos")]
     if let Some(cookie) = state.auth_cookie.lock().ok().and_then(|cookie| cookie.clone()) {
-        inject_harness_auth_cookie(&window, &cookie);
+        let app_for_event = app.clone();
+        inject_harness_auth_cookie(&window, &cookie, move || {
+            let _ = app_for_event.emit("harness-auth-ready", ());
+        });
     }
     true
 }

@@ -1136,6 +1136,20 @@ async function listenForOutput() {
     if (state.logs.length > 500) state.logs.shift();
     appendLogRow(event.payload);
   });
+  await listen("harness-auth-ready", () => {
+    // The first tokenized navigation may have rendered dsh's 401 text before
+    // the host-side WKHTTPCookieStore write completed. Reload only after the
+    // cookie store confirms the write, so the same authenticated URL can be
+    // retried without restarting the Harness process.
+    if (!state.status?.running || !state.status.url || state.windowHidden) return;
+    state.frameUnloaded = false;
+    state.frameUrl = "";
+    state.framePid = null;
+    elements.frameLoading.textContent = t("frame.loading");
+    elements.frameLoading.classList.remove("hidden");
+    elements.frame.removeAttribute("src");
+    elements.frame.src = state.status.url;
+  });
   await listen("runtime-progress", (event) => {
     const progress = event.payload || {};
     if (state.runtime) {
