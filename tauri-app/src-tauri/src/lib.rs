@@ -12,9 +12,10 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use futures_util::StreamExt;
-use tokio::net::TcpStream;
-use tokio_tungstenite::{connect_async, MaybeTlsStream, WebSocketStream};
 use tauri_plugin_notification::NotificationExt;
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
+use tokio::net::{TcpListener, TcpStream};
+use tokio_tungstenite::{connect_async, MaybeTlsStream, WebSocketStream};
 
 #[cfg(target_os = "macos")]
 use objc2::rc::Retained;
@@ -28,8 +29,7 @@ use tauri::tray::{MouseButton, TrayIconBuilder, TrayIconEvent};
 use tauri::utils::Theme;
 use tauri::window::Color;
 use tauri::{
-    AppHandle, Emitter, Manager, RunEvent, State, WebviewWindow, WebviewWindowBuilder,
-    WindowEvent,
+    AppHandle, Emitter, Manager, RunEvent, State, WebviewWindow, WebviewWindowBuilder, WindowEvent,
 };
 
 const PORT_START: u16 = 3080;
@@ -112,6 +112,11 @@ struct HarnessState {
     lifecycle: Arc<Mutex<()>>,
     child: Arc<Mutex<Option<Child>>>,
     port: Arc<AtomicU16>,
+    // The browser-facing port is a loopback proxy. It forwards to the dsh
+    // port while attaching the native token-auth cookie to every request, so
+    // WebKit never has to send that cookie from a third-party iframe.
+    proxy_port: Arc<AtomicU16>,
+    proxy_stop: Arc<Mutex<Option<Arc<AtomicBool>>>>,
     // Launch token printed by token-authenticated dsh releases (0.1.2+). The
     // embedded WebView and the event watcher both need it to log in.
     token: Arc<Mutex<Option<String>>>,
@@ -265,6 +270,10 @@ fn is_port_available(port: u16) -> bool {
 
 fn first_available_port(start: u16, end: u16) -> Option<u16> {
     (start..=end).find(|port| is_port_available(*port))
+}
+
+fn first_available_port_excluding(start: u16, end: u16, excluded: u16) -> Option<u16> {
+    (start..=end).find(|port| *port != excluded && is_port_available(*port))
 }
 
 fn version_parts(value: &str) -> (Vec<u64>, Vec<String>) {
@@ -723,8 +732,7 @@ fn is_managed_harness_command(
         return false;
     };
     let trailing_arguments = arguments[port_text.len()..].trim();
-    (port_start..=port_end).contains(&port)
-        && matches!(trailing_arguments, "" | "--no-open")
+    (port_start..=port_end).contains(&port) && matches!(trailing_arguments, "" | "--no-open")
 }
 
 fn orphaned_managed_harness_process_ids(app: &AppHandle) -> Vec<u32> {
@@ -2084,6 +2092,15 @@ fn touch_harness_activity(state: &HarnessState) {
     state.last_event_at.store(now_millis(), Ordering::Release);
 }
 
+fn stop_harness_proxy(state: &HarnessState) {
+    if let Ok(mut stop) = state.proxy_stop.lock() {
+        if let Some(stop) = stop.take() {
+            stop.store(true, Ordering::Release);
+        }
+    }
+    state.proxy_port.store(0, Ordering::Relaxed);
+}
+
 fn snapshot(state: &HarnessState) -> HarnessStatus {
     let mut running = false;
     let mut pid = None;
@@ -2110,6 +2127,7 @@ fn snapshot(state: &HarnessState) -> HarnessStatus {
         if finished {
             let _ = guard.take();
             state.port.store(0, Ordering::Relaxed);
+            stop_harness_proxy(state);
             if let Ok(mut path) = state.dsh_path.lock() {
                 *path = None;
             }
@@ -2123,13 +2141,11 @@ fn snapshot(state: &HarnessState) -> HarnessStatus {
     }
 
     let port = state.port.load(Ordering::Relaxed);
-    let token = state.token.lock().ok().and_then(|token| token.clone());
-    // Token-authenticated dsh only mints its auth cookie when the root URL is
-    // opened with the launch token, so hand the WebView the authenticated URL.
-    let url = running.then(|| match token {
-        Some(token) => format!("http://127.0.0.1:{port}/?token={token}"),
-        None => format!("http://127.0.0.1:{port}"),
-    });
+    let proxy_port = state.proxy_port.load(Ordering::Relaxed);
+    // The WebView must load the browser-facing proxy rather than the dsh
+    // backend directly. The proxy adds the native auth cookie to every HTTP
+    // and WebSocket request, which avoids WebKit's third-party-cookie policy.
+    let url = (running && proxy_port > 0).then(|| format!("http://127.0.0.1:{proxy_port}"));
     let dsh_path = if running {
         state.dsh_path.lock().ok().and_then(|path| {
             path.as_ref()
@@ -2155,6 +2171,7 @@ fn snapshot(state: &HarnessState) -> HarnessStatus {
 }
 
 fn stop_harness_inner(app: &AppHandle, state: &HarnessState) {
+    stop_harness_proxy(state);
     let mut stopped_pid = None;
     if let Ok(mut guard) = state.child.lock() {
         if let Some(mut child) = guard.take() {
@@ -2255,6 +2272,12 @@ async fn start_harness_inner(
         emit_log(app, &state.logs, "desk", message);
         return Err(message.to_string());
     };
+    let Some(proxy_port) = first_available_port_excluding(PORT_START, PORT_END, port) else {
+        let message = "没有可用的 Harness 代理端口，请释放 3080–3099 端口后重试。";
+        set_last_error(state, Some(message.to_string()));
+        emit_log(app, &state.logs, "desk", message);
+        return Err(message.to_string());
+    };
 
     let mut child = spawn_dsh(&command, port, app).map_err(|error| {
         let message = format!("启动 dsh 失败：{error}");
@@ -2323,7 +2346,29 @@ async fn start_harness_inner(
         // is its business and must never gate the shell's readiness again.
         if client.get(&url).send().await.is_ok() {
             emit_log(app, &state.logs, "desk", format!("Harness 已就绪：{url}"));
-            spawn_harness_cookie_mint(app.clone(), state.clone(), port);
+            // Complete the current dsh login handshake before returning the
+            // status to the shell. The browser-facing proxy must have the
+            // cookie before the iframe is allowed to navigate.
+            mint_harness_cookie(state.clone(), port).await;
+            let cookie = state
+                .auth_cookie
+                .lock()
+                .ok()
+                .and_then(|cookie| cookie.clone());
+            if cookie.is_some() {
+                emit_log(
+                    app,
+                    &state.logs,
+                    "desk",
+                    "已取得 Harness 登录凭据".to_string(),
+                );
+            }
+            if let Err(error) = start_harness_proxy(state, port, proxy_port, cookie).await {
+                stop_harness_inner(app, state);
+                set_last_error(state, Some(error.clone()));
+                emit_log(app, &state.logs, "desk", error.clone());
+                return Err(error);
+            }
             return Ok(snapshot(state));
         }
 
@@ -2339,82 +2384,216 @@ async fn start_harness_inner(
     }
 }
 
-/// Best-effort login on behalf of the embedded WebView.
-///
-/// Token-authenticated dsh only mints its auth cookie when the root URL is
-/// opened with the launch token, and WebKit drops cookies set inside the
-/// cross-origin Harness iframe. This waits for the token printed on stdout,
-/// performs the exchange natively and plants the resulting cookie into the
-/// WebView's cookie store. Every step is opportunistic: when no token shows
-/// up (legacy dsh) or the exchange fails, the page still loads and may work
-/// on its own — this must never block or fail the startup path.
-fn spawn_harness_cookie_mint(app: AppHandle, state: HarnessState, port: u16) {
-    tauri::async_runtime::spawn(async move {
-        let client = match reqwest::Client::builder()
-            .timeout(Duration::from_millis(1200))
-            // Keep the raw exchange response so its cookie can be captured.
-            .redirect(reqwest::redirect::Policy::none())
-            .build()
-        {
-            Ok(client) => client,
-            Err(_) => return,
-        };
+const MAX_PROXY_REQUEST_HEADER_BYTES: usize = 64 * 1024;
 
-        // The token is printed by dsh right before the server starts, but
-        // stdout arrives asynchronously; give it a generous window.
-        let token = {
-            let deadline = Instant::now() + Duration::from_secs(30);
-            loop {
-                let token = state.token.lock().ok().and_then(|token| token.clone());
-                if token.is_some() || Instant::now() >= deadline {
-                    break token;
-                }
-                tokio::time::sleep(Duration::from_millis(400)).await;
+async fn start_harness_proxy(
+    state: &HarnessState,
+    backend_port: u16,
+    proxy_port: u16,
+    cookie: Option<String>,
+) -> Result<(), String> {
+    let listener = TcpListener::bind(("127.0.0.1", proxy_port))
+        .await
+        .map_err(|error| format!("启动 Harness 认证代理失败：{error}"))?;
+    let stop = Arc::new(AtomicBool::new(false));
+    if let Ok(mut guard) = state.proxy_stop.lock() {
+        *guard = Some(stop.clone());
+    } else {
+        return Err("无法锁定 Harness 代理状态。".to_string());
+    }
+    state.proxy_port.store(proxy_port, Ordering::Release);
+
+    tauri::async_runtime::spawn(run_harness_proxy(listener, backend_port, cookie, stop));
+    Ok(())
+}
+
+async fn run_harness_proxy(
+    listener: TcpListener,
+    backend_port: u16,
+    cookie: Option<String>,
+    stop: Arc<AtomicBool>,
+) {
+    loop {
+        if stop.load(Ordering::Acquire) {
+            break;
+        }
+
+        tokio::select! {
+            accepted = listener.accept() => {
+                let Ok((client, _)) = accepted else {
+                    continue;
+                };
+                let cookie = cookie.clone();
+                tauri::async_runtime::spawn(proxy_harness_connection(
+                    client,
+                    backend_port,
+                    cookie,
+                ));
             }
-        };
-        let Some(token) = token else {
+            _ = tokio::time::sleep(Duration::from_millis(100)) => {}
+        }
+    }
+}
+
+async fn proxy_harness_connection(
+    mut client: TcpStream,
+    backend_port: u16,
+    cookie: Option<String>,
+) {
+    let mut request = Vec::with_capacity(4096);
+    let mut chunk = [0_u8; 8192];
+    let header_end = loop {
+        let Ok(read) = client.read(&mut chunk).await else {
             return;
         };
-
-        let login_url = format!("http://127.0.0.1:{port}/?token={token}");
-        for _ in 0..6 {
-            if let Ok(response) = client.get(&login_url).send().await {
-                let cookie = response
-                    .headers()
-                    .get(reqwest::header::SET_COOKIE)
-                    .and_then(|value| value.to_str().ok())
-                    .and_then(|value| value.split(';').next())
-                    .map(str::to_string);
-                if let Some(cookie) = cookie {
-                    if let Ok(mut guard) = state.auth_cookie.lock() {
-                        *guard = Some(cookie);
-                    }
-                    if let Some(window) = app.get_webview_window("main") {
-                        let cookie = state
-                            .auth_cookie
-                            .lock()
-                            .ok()
-                            .and_then(|cookie| cookie.clone());
-                        if let Some(cookie) = cookie {
-                            let app_for_event = app.clone();
-                            let state_for_log = state.clone();
-                            inject_harness_auth_cookie(&window, &cookie, move || {
-                                emit_log(
-                                    &app_for_event,
-                                    &state_for_log.logs,
-                                    "desk",
-                                    "已写入 Harness 登录凭据".to_string(),
-                                );
-                                let _ = app_for_event.emit("harness-auth-ready", ());
-                            });
-                        }
-                    }
-                    return;
-                }
-            }
-            tokio::time::sleep(Duration::from_millis(500)).await;
+        if read == 0 {
+            return;
         }
-    });
+        request.extend_from_slice(&chunk[..read]);
+        if let Some(index) = request.windows(4).position(|window| window == b"\r\n\r\n") {
+            break index + 4;
+        }
+        if request.len() > MAX_PROXY_REQUEST_HEADER_BYTES {
+            return;
+        }
+    };
+
+    let Some(rewritten) =
+        rewrite_harness_proxy_request(&request[..header_end], backend_port, cookie.as_deref())
+    else {
+        return;
+    };
+    let Ok(mut backend) = TcpStream::connect(("127.0.0.1", backend_port)).await else {
+        return;
+    };
+    if backend.write_all(&rewritten).await.is_err()
+        || backend.write_all(&request[header_end..]).await.is_err()
+    {
+        return;
+    }
+
+    let _ = tokio::io::copy_bidirectional(&mut client, &mut backend).await;
+}
+
+fn rewrite_harness_proxy_request(
+    request: &[u8],
+    backend_port: u16,
+    cookie: Option<&str>,
+) -> Option<Vec<u8>> {
+    let request = std::str::from_utf8(request).ok()?;
+    let mut lines = request.split("\r\n");
+    let request_line = lines.next()?.trim_end();
+    if request_line.is_empty() {
+        return None;
+    }
+
+    let mut headers = Vec::new();
+    let mut websocket_upgrade = false;
+    let mut has_origin = false;
+    for line in lines {
+        if line.is_empty() {
+            break;
+        }
+        let (name, value) = line.split_once(':')?;
+        let name = name.trim();
+        let value = value.trim();
+        if name.eq_ignore_ascii_case("upgrade")
+            && value
+                .split(',')
+                .any(|value| value.trim().eq_ignore_ascii_case("websocket"))
+        {
+            websocket_upgrade = true;
+        }
+        if name.eq_ignore_ascii_case("origin") {
+            has_origin = true;
+        }
+        headers.push((name, value, line));
+    }
+
+    let mut rewritten = String::with_capacity(request.len() + 128);
+    rewritten.push_str(request_line);
+    rewritten.push_str("\r\n");
+    for (name, _value, line) in headers {
+        if name.eq_ignore_ascii_case("host")
+            || name.eq_ignore_ascii_case("cookie")
+            || name.eq_ignore_ascii_case("proxy-connection")
+            || name.eq_ignore_ascii_case("origin")
+            || (!websocket_upgrade && name.eq_ignore_ascii_case("connection"))
+        {
+            continue;
+        }
+        rewritten.push_str(line);
+        rewritten.push_str("\r\n");
+    }
+    rewritten.push_str(&format!("Host: 127.0.0.1:{backend_port}\r\n"));
+    if has_origin {
+        rewritten.push_str(&format!("Origin: http://127.0.0.1:{backend_port}\r\n"));
+    }
+    if let Some(cookie) = cookie {
+        rewritten.push_str("Cookie: ");
+        rewritten.push_str(cookie);
+        rewritten.push_str("\r\n");
+    }
+    if !websocket_upgrade {
+        rewritten.push_str("Connection: close\r\n");
+    }
+    rewritten.push_str("\r\n");
+    Some(rewritten.into_bytes())
+}
+
+/// Best-effort login for the browser-facing Harness proxy.
+///
+/// Token-authenticated dsh only mints its auth cookie when the root URL is
+/// opened with the launch token, and WebKit blocks that host-only cookie when
+/// the Harness is embedded as a third-party iframe. This waits for the token
+/// printed on stdout and performs the exchange natively. The cookie is then
+/// retained by the local proxy and attached to every forwarded request.
+/// Legacy dsh versions simply time out the short token wait.
+async fn mint_harness_cookie(state: HarnessState, port: u16) {
+    let client = match reqwest::Client::builder()
+        .timeout(Duration::from_millis(1200))
+        // Keep the raw exchange response so its cookie can be captured.
+        .redirect(reqwest::redirect::Policy::none())
+        .build()
+    {
+        Ok(client) => client,
+        Err(_) => return,
+    };
+
+    // The token is printed by dsh right before the server starts, but stdout
+    // arrives asynchronously. A short wait keeps legacy startup responsive.
+    let token = {
+        let deadline = Instant::now() + Duration::from_secs(5);
+        loop {
+            let token = state.token.lock().ok().and_then(|token| token.clone());
+            if token.is_some() || Instant::now() >= deadline {
+                break token;
+            }
+            tokio::time::sleep(Duration::from_millis(200)).await;
+        }
+    };
+    let Some(token) = token else {
+        return;
+    };
+
+    let login_url = format!("http://127.0.0.1:{port}/?token={token}");
+    for _ in 0..6 {
+        if let Ok(response) = client.get(&login_url).send().await {
+            let cookie = response
+                .headers()
+                .get(reqwest::header::SET_COOKIE)
+                .and_then(|value| value.to_str().ok())
+                .and_then(|value| value.split(';').next())
+                .map(str::to_string);
+            if let Some(cookie) = cookie {
+                if let Ok(mut guard) = state.auth_cookie.lock() {
+                    *guard = Some(cookie);
+                }
+                return;
+            }
+        }
+        tokio::time::sleep(Duration::from_millis(500)).await;
+    }
 }
 
 const MAX_SEEN_INTERACTIONS: usize = 256;
@@ -2452,14 +2631,18 @@ async fn connect_harness_ws(
     cookie: Option<&str>,
 ) -> Result<WebSocketStream<MaybeTlsStream<TcpStream>>, String> {
     use tokio_tungstenite::tungstenite::client::IntoClientRequest;
-    use tokio_tungstenite::tungstenite::http::header::{COOKIE, HeaderValue};
+    use tokio_tungstenite::tungstenite::http::header::{HeaderValue, COOKIE};
 
-    let mut request = url.into_client_request().map_err(|error| error.to_string())?;
+    let mut request = url
+        .into_client_request()
+        .map_err(|error| error.to_string())?;
     if let Some(cookie) = cookie {
         let value = HeaderValue::from_str(cookie).map_err(|error| error.to_string())?;
         request.headers_mut().insert(COOKIE, value);
     }
-    let (stream, _) = connect_async(request).await.map_err(|error| error.to_string())?;
+    let (stream, _) = connect_async(request)
+        .await
+        .map_err(|error| error.to_string())?;
     Ok(stream)
 }
 
@@ -2499,8 +2682,7 @@ async fn watch_harness_events(
         return Ok(());
     }
 
-    let mut mux =
-        connect_harness_ws(&format!("{base}/api/events.mux"), cookie.as_deref()).await?;
+    let mut mux = connect_harness_ws(&format!("{base}/api/events.mux"), cookie.as_deref()).await?;
     let mut host =
         connect_harness_ws(&format!("{base}/api/events.host"), cookie.as_deref()).await?;
     let mut running_sessions = HashMap::new();
@@ -2559,14 +2741,20 @@ fn handle_mux_frame(
                 .and_then(|value| value.as_str())
                 .unwrap_or_default()
                 .to_string();
-            let rpc_id = envelope.get("rpcId").and_then(|value| value.as_str()).unwrap_or("");
+            let rpc_id = envelope
+                .get("rpcId")
+                .and_then(|value| value.as_str())
+                .unwrap_or("");
             let key = interaction_key(payload, rpc_id);
             if is_new_interaction(seen_interactions, &key) {
                 on_needs_interaction(app, state, "question", Some(body.as_str()));
             }
         }
         "approval/requested" => {
-            let rpc_id = envelope.get("rpcId").and_then(|value| value.as_str()).unwrap_or("");
+            let rpc_id = envelope
+                .get("rpcId")
+                .and_then(|value| value.as_str())
+                .unwrap_or("");
             let key = interaction_key(payload, rpc_id);
             if is_new_interaction(seen_interactions, &key) {
                 on_needs_interaction(app, state, "approval", None);
@@ -2591,7 +2779,10 @@ fn handle_host_frame(
     if payload.get("type").and_then(|value| value.as_str()) != Some("host/session-status") {
         return;
     }
-    let running = payload.get("running").and_then(|value| value.as_bool()).unwrap_or(false);
+    let running = payload
+        .get("running")
+        .and_then(|value| value.as_bool())
+        .unwrap_or(false);
     let Some(session_id) = payload.get("sessionId").and_then(|value| value.as_str()) else {
         return;
     };
@@ -2658,7 +2849,9 @@ fn current_language(state: &HarnessState) -> String {
 }
 
 fn on_needs_interaction(app: &AppHandle, state: &HarnessState, kind: &str, question: Option<&str>) {
-    if !state.notify_enabled.load(Ordering::Acquire) || !state.notify_interaction.load(Ordering::Acquire) {
+    if !state.notify_enabled.load(Ordering::Acquire)
+        || !state.notify_interaction.load(Ordering::Acquire)
+    {
         return;
     }
     if window_is_focused(app) {
@@ -2666,23 +2859,38 @@ fn on_needs_interaction(app: &AppHandle, state: &HarnessState, kind: &str, quest
     }
     let english = current_language(state) == "en";
     let (title, body) = match (kind, english) {
-        ("question", true) => ("Needs your input", question.unwrap_or("Harness is waiting for your answer")),
-        ("question", false) => ("需要你的输入", question.unwrap_or("Harness 正在等待你的回答")),
-        ("approval", true) => ("Needs your approval", "Harness needs your approval to continue"),
+        ("question", true) => (
+            "Needs your input",
+            question.unwrap_or("Harness is waiting for your answer"),
+        ),
+        ("question", false) => (
+            "需要你的输入",
+            question.unwrap_or("Harness 正在等待你的回答"),
+        ),
+        ("approval", true) => (
+            "Needs your approval",
+            "Harness needs your approval to continue",
+        ),
         _ => ("需要你的批准", "Harness 需要你的批准才能继续"),
     };
     raise_attention(app, state, title, body);
 }
 
 fn on_task_completed(app: &AppHandle, state: &HarnessState, session_id: &str) {
-    if !state.notify_enabled.load(Ordering::Acquire) || !state.notify_task_completed.load(Ordering::Acquire) {
+    if !state.notify_enabled.load(Ordering::Acquire)
+        || !state.notify_task_completed.load(Ordering::Acquire)
+    {
         return;
     }
     if window_is_focused(app) {
         return;
     }
     let english = current_language(state) == "en";
-    let title = if english { "Task completed" } else { "任务已完成" };
+    let title = if english {
+        "Task completed"
+    } else {
+        "任务已完成"
+    };
     let body = if session_id.is_empty() {
         if english {
             "The Harness finished a task".to_string()
@@ -2722,8 +2930,12 @@ fn set_notification_prefs(
     interaction: bool,
 ) {
     state.notify_enabled.store(enabled, Ordering::Release);
-    state.notify_task_completed.store(task_completed, Ordering::Release);
-    state.notify_interaction.store(interaction, Ordering::Release);
+    state
+        .notify_task_completed
+        .store(task_completed, Ordering::Release);
+    state
+        .notify_interaction
+        .store(interaction, Ordering::Release);
 }
 
 #[tauri::command]
@@ -2757,7 +2969,12 @@ fn set_language(app: AppHandle, state: State<'_, HarnessState>, language: String
     {
         let _ = app.remove_tray_by_id("main-tray");
         if let Err(error) = build_tray(&app, language) {
-            emit_log(&app, &state.logs, "desk", format!("重建托盘菜单失败：{error}"));
+            emit_log(
+                &app,
+                &state.logs,
+                "desk",
+                format!("重建托盘菜单失败：{error}"),
+            );
         }
     }
 }
@@ -3045,7 +3262,9 @@ fn apply_macos_dock_icon(use_black_variant: bool) {
         return;
     };
     let application = NSApplication::sharedApplication(marker);
-    unsafe { application.setApplicationIconImage(Some(&image)); }
+    unsafe {
+        application.setApplicationIconImage(Some(&image));
+    }
 }
 
 #[tauri::command]
@@ -3101,74 +3320,6 @@ fn main_window_webview_configuration() -> Retained<WKWebViewConfiguration> {
     config
 }
 
-/// Plant the dsh auth cookie into the WebView's HTTP cookie store.
-///
-/// WKWebView's ITP drops cookies that a cross-origin iframe tries to set, so
-/// the token exchange inside the embedded Harness page can never mint its own
-/// session and the page stays on dsh's 401 screen. The readiness check
-/// performs the exchange natively instead; WebKit does send host-injected
-/// cookies with the iframe's requests, which unlocks the page.
-#[cfg(target_os = "macos")]
-fn inject_harness_auth_cookie<R: tauri::Runtime>(
-    window: &WebviewWindow<R>,
-    cookie: &str,
-    on_stored: impl Fn() + Send + 'static,
-) {
-    use block2::RcBlock;
-    use objc2::runtime::{AnyObject, ProtocolObject};
-    use objc2_foundation::{NSDictionary, NSMutableDictionary, NSString, NSHTTPCookie};
-    use objc2_web_kit::WKWebView;
-
-    // The header is `name=value; attributes...`; only the pair is sent back.
-    let Some(pair) = cookie.split(';').next() else {
-        return;
-    };
-    let Some((name, value)) = pair.split_once('=') else {
-        return;
-    };
-    let (name, value) = (name.to_string(), value.to_string());
-
-    let _ = window.with_webview(move |webview| {
-        let pointer = webview.inner() as *mut WKWebView;
-        let Some(web_view) = (unsafe { pointer.as_ref() }) else {
-            return;
-        };
-        let data_store = unsafe { web_view.configuration().websiteDataStore() };
-        let cookie_store = unsafe { data_store.httpCookieStore() };
-
-        let name = NSString::from_str(&name);
-        let value = NSString::from_str(&value);
-        let properties = NSMutableDictionary::<NSString, AnyObject>::dictionaryWithCapacity(4);
-        unsafe {
-            properties.setObject_forKey(&value, ProtocolObject::from_ref(ns_string!("Value")));
-            properties.setObject_forKey(
-                ns_string!("127.0.0.1"),
-                ProtocolObject::from_ref(ns_string!("Domain")),
-            );
-            properties.setObject_forKey(
-                ns_string!("/"),
-                ProtocolObject::from_ref(ns_string!("Path")),
-            );
-            properties.setObject_forKey(&name, ProtocolObject::from_ref(ns_string!("Name")));
-        }
-        let properties: &NSDictionary<NSString, AnyObject> = properties.as_ref();
-        if let Some(cookie) = unsafe { NSHTTPCookie::cookieWithProperties(properties) } {
-            let completion = RcBlock::new(on_stored);
-            unsafe {
-                cookie_store.setCookie_completionHandler(&cookie, Some(&completion));
-            }
-        }
-    });
-}
-
-#[cfg(not(target_os = "macos"))]
-fn inject_harness_auth_cookie<R: tauri::Runtime>(
-    _window: &WebviewWindow<R>,
-    _cookie: &str,
-    _on_stored: impl Fn() + Send + 'static,
-) {
-}
-
 fn create_main_window<R: tauri::Runtime>(app: &AppHandle<R>) -> tauri::Result<WebviewWindow<R>> {
     let config = app
         .config()
@@ -3214,10 +3365,7 @@ fn hidden_window_action(memory_saver: bool) -> HiddenWindowAction {
     }
 }
 
-fn present_main_window<R: tauri::Runtime>(
-    app: &AppHandle<R>,
-    window: WebviewWindow<R>,
-) -> bool {
+fn present_main_window<R: tauri::Runtime>(app: &AppHandle<R>, window: WebviewWindow<R>) -> bool {
     if window.show().is_err() {
         return false;
     }
@@ -3236,16 +3384,6 @@ fn present_main_window<R: tauri::Runtime>(
     state
         .keep_alive_after_window_destroy
         .store(false, Ordering::Release);
-    // A freshly recreated WebView shares the persistent cookie store, but the
-    // Harness cookie may have been minted while this window was destroyed;
-    // re-plant it so the embedded page can authenticate again.
-    #[cfg(target_os = "macos")]
-    if let Some(cookie) = state.auth_cookie.lock().ok().and_then(|cookie| cookie.clone()) {
-        let app_for_event = app.clone();
-        inject_harness_auth_cookie(&window, &cookie, move || {
-            let _ = app_for_event.emit("harness-auth-ready", ());
-        });
-    }
     true
 }
 
@@ -3383,15 +3521,69 @@ fn tray_menu_label(lang: &str, id: &str) -> &'static str {
 
 #[cfg(feature = "tray-icon")]
 fn build_tray<R: tauri::Runtime>(app: &AppHandle<R>, lang: &str) -> tauri::Result<()> {
-    let show = MenuItem::with_id(app, "show", tray_menu_label(lang, "show"), true, None::<&str>)?;
-    let settings = MenuItem::with_id(app, "settings", tray_menu_label(lang, "settings"), true, None::<&str>)?;
-    let start = MenuItem::with_id(app, "start", tray_menu_label(lang, "start"), true, None::<&str>)?;
-    let restart = MenuItem::with_id(app, "restart", tray_menu_label(lang, "restart"), true, None::<&str>)?;
-    let stop = MenuItem::with_id(app, "stop", tray_menu_label(lang, "stop"), true, None::<&str>)?;
-    let logs = MenuItem::with_id(app, "logs", tray_menu_label(lang, "logs"), true, None::<&str>)?;
-    let check_app = MenuItem::with_id(app, "check-app", tray_menu_label(lang, "check-app"), true, None::<&str>)?;
-    let check_dsh = MenuItem::with_id(app, "check-dsh", tray_menu_label(lang, "check-dsh"), true, None::<&str>)?;
-    let quit = MenuItem::with_id(app, "quit", tray_menu_label(lang, "quit"), true, None::<&str>)?;
+    let show = MenuItem::with_id(
+        app,
+        "show",
+        tray_menu_label(lang, "show"),
+        true,
+        None::<&str>,
+    )?;
+    let settings = MenuItem::with_id(
+        app,
+        "settings",
+        tray_menu_label(lang, "settings"),
+        true,
+        None::<&str>,
+    )?;
+    let start = MenuItem::with_id(
+        app,
+        "start",
+        tray_menu_label(lang, "start"),
+        true,
+        None::<&str>,
+    )?;
+    let restart = MenuItem::with_id(
+        app,
+        "restart",
+        tray_menu_label(lang, "restart"),
+        true,
+        None::<&str>,
+    )?;
+    let stop = MenuItem::with_id(
+        app,
+        "stop",
+        tray_menu_label(lang, "stop"),
+        true,
+        None::<&str>,
+    )?;
+    let logs = MenuItem::with_id(
+        app,
+        "logs",
+        tray_menu_label(lang, "logs"),
+        true,
+        None::<&str>,
+    )?;
+    let check_app = MenuItem::with_id(
+        app,
+        "check-app",
+        tray_menu_label(lang, "check-app"),
+        true,
+        None::<&str>,
+    )?;
+    let check_dsh = MenuItem::with_id(
+        app,
+        "check-dsh",
+        tray_menu_label(lang, "check-dsh"),
+        true,
+        None::<&str>,
+    )?;
+    let quit = MenuItem::with_id(
+        app,
+        "quit",
+        tray_menu_label(lang, "quit"),
+        true,
+        None::<&str>,
+    )?;
     let menu = MenuBuilder::new(app)
         .items(&[
             &show, &settings, &start, &restart, &stop, &logs, &check_app, &check_dsh, &quit,
@@ -3455,7 +3647,10 @@ fn build_tray<R: tauri::Runtime>(app: &AppHandle<R>, lang: &str) -> tauri::Resul
 }
 
 #[cfg(feature = "tray-icon")]
-fn setup_tray<R: tauri::Runtime>(app: &mut tauri::App<R>, state: &HarnessState) -> tauri::Result<()> {
+fn setup_tray<R: tauri::Runtime>(
+    app: &mut tauri::App<R>,
+    state: &HarnessState,
+) -> tauri::Result<()> {
     build_tray(app.handle(), &current_language(state))
 }
 
@@ -3465,6 +3660,8 @@ pub fn run() {
         lifecycle: Arc::new(Mutex::new(())),
         child: Arc::new(Mutex::new(None)),
         port: Arc::new(AtomicU16::new(0)),
+        proxy_port: Arc::new(AtomicU16::new(0)),
+        proxy_stop: Arc::new(Mutex::new(None)),
         memory_saver: Arc::new(AtomicBool::new(true)),
         keep_alive_after_window_destroy: Arc::new(AtomicBool::new(false)),
         main_window_recreating: Arc::new(AtomicBool::new(false)),
@@ -3501,7 +3698,10 @@ pub fn run() {
                 let state = app.state::<HarnessState>().inner().clone();
                 setup_tray(app, &state)?;
             }
-            spawn_task_watcher(app.handle().clone(), app.state::<HarnessState>().inner().clone());
+            spawn_task_watcher(
+                app.handle().clone(),
+                app.state::<HarnessState>().inner().clone(),
+            );
             Ok(())
         })
         .on_menu_event(|app, event| match event.id().as_ref() {
@@ -3631,7 +3831,9 @@ mod tests {
     #[test]
     fn extract_launch_token_parses_dsh_web_line() {
         assert_eq!(
-            extract_launch_token("dsh web: http://127.0.0.1:3080/?token=I3p7Je_ZBcUDP-N4oyRa-0tmtOe7ePeq0mzO16PX7eE"),
+            extract_launch_token(
+                "dsh web: http://127.0.0.1:3080/?token=I3p7Je_ZBcUDP-N4oyRa-0tmtOe7ePeq0mzO16PX7eE"
+            ),
             Some("I3p7Je_ZBcUDP-N4oyRa-0tmtOe7ePeq0mzO16PX7eE".to_string())
         );
     }
@@ -3675,6 +3877,39 @@ mod tests {
     }
 
     #[test]
+    fn harness_proxy_rewrites_http_auth_headers() {
+        let request = b"GET /api/health HTTP/1.1\r\nHost: 127.0.0.1:3091\r\nCookie: stale=1\r\nConnection: keep-alive\r\n\r\n";
+        let rewritten = String::from_utf8(
+            rewrite_harness_proxy_request(request, 3080, Some("dsh-auth-l-1=secret"))
+                .expect("proxy request should be rewritten"),
+        )
+        .expect("rewritten request should stay HTTP text");
+
+        assert!(rewritten.starts_with("GET /api/health HTTP/1.1\r\n"));
+        assert!(rewritten.contains("Host: 127.0.0.1:3080\r\n"));
+        assert!(rewritten.contains("Cookie: dsh-auth-l-1=secret\r\n"));
+        assert!(rewritten.contains("Connection: close\r\n"));
+        assert!(!rewritten.contains("stale=1"));
+    }
+
+    #[test]
+    fn harness_proxy_preserves_websocket_upgrade() {
+        let request = b"GET /api/remote.mux HTTP/1.1\r\nHost: 127.0.0.1:3091\r\nOrigin: http://127.0.0.1:3091\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nCookie: stale=1\r\n\r\n";
+        let rewritten = String::from_utf8(
+            rewrite_harness_proxy_request(request, 3080, Some("dsh-auth-l-1=secret"))
+                .expect("proxy request should be rewritten"),
+        )
+        .expect("rewritten request should stay HTTP text");
+
+        assert!(rewritten.contains("Upgrade: websocket\r\n"));
+        assert!(rewritten.contains("Connection: Upgrade\r\n"));
+        assert!(rewritten.contains("Origin: http://127.0.0.1:3080\r\n"));
+        assert!(rewritten.contains("Cookie: dsh-auth-l-1=secret\r\n"));
+        assert!(!rewritten.contains("Connection: close\r\n"));
+        assert!(!rewritten.contains("stale=1"));
+    }
+
+    #[test]
     fn dsh_candidates_include_path_entries() {
         let candidates = dsh_candidates(None);
         assert!(!candidates.is_empty());
@@ -3684,13 +3919,7 @@ mod tests {
     fn harness_web_command_uses_profile_mode_without_opening_browser() {
         assert_eq!(
             dsh_web_arguments(3080, true),
-            vec![
-                "--profile",
-                "web",
-                "--port",
-                "3080",
-                "--no-open",
-            ]
+            vec!["--profile", "web", "--port", "3080", "--no-open",]
         );
         assert_eq!(
             dsh_web_arguments(3080, false),
@@ -3864,7 +4093,10 @@ mod tests {
         // Unknown shapes fall back to the wire rpcId and stay distinct.
         let fallback = serde_json::json!({});
         assert_eq!(interaction_key(&fallback, "rpc-a"), "q:rpc-a");
-        assert_ne!(interaction_key(&fallback, "rpc-a"), interaction_key(&fallback, "rpc-b"));
+        assert_ne!(
+            interaction_key(&fallback, "rpc-a"),
+            interaction_key(&fallback, "rpc-b")
+        );
     }
 
     #[test]
