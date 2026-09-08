@@ -1,0 +1,11 @@
+{
+  "name": "deepseek-harness-desk-website",
+  "private": true,
+  "type": "module",
+  "engines": {
+    "node": ">=18"
+  },
+  "scripts": {
+    "build": "node scripts/build.mjs"
+  }
+}

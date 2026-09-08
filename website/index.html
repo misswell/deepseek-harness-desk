@@ -1,0 +1,245 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="theme-color" content="#10162a" />
+    <meta
+      name="description"
+      content="DeepSeek Harness Desk is an independent open-source desktop client for running DeepSeek Harness in a calm, focused window."
+    />
+    <meta property="og:title" content="DeepSeek Harness Desk — keep the harness in your flow" />
+    <meta
+      property="og:description"
+      content="A focused desktop shell for DeepSeek Harness. Open source, free, and made for macOS, Windows, and Linux."
+    />
+    <meta property="og:type" content="website" />
+    <meta property="og:url" content="https://harness.liuguofeng.com/" />
+    <link rel="canonical" href="https://harness.liuguofeng.com/" />
+    <link rel="icon" type="image/png" href="./assets/deepseek-harness-icon.png" />
+    <link rel="stylesheet" href="./styles.css" />
+    <title>DeepSeek Harness Desk — a calmer way to run Harness</title>
+  </head>
+  <body>
+    <a class="skip-link" href="#main-content">Skip to content</a>
+
+    <div class="page-noise" aria-hidden="true"></div>
+    <div class="page-grid" aria-hidden="true"></div>
+
+    <header class="site-header" data-header>
+      <a class="brand" href="#top" aria-label="DeepSeek Harness Desk home">
+        <span class="brand-mark">
+          <img src="./assets/deepseek-harness-icon.png" alt="" />
+        </span>
+        <span class="brand-name">DeepSeek <strong>Harness Desk</strong></span>
+      </a>
+
+      <nav class="desktop-nav" aria-label="Primary navigation">
+        <a href="#surface">Surface</a>
+        <a href="#details">Details</a>
+        <a href="#download">Download</a>
+      </nav>
+
+      <div class="header-actions">
+        <a class="header-github" href="https://github.com/misswell/deepseek-harness-desk" target="_blank" rel="noreferrer">
+          GitHub
+          <span aria-hidden="true">↗</span>
+        </a>
+        <button class="menu-toggle" type="button" aria-expanded="false" aria-controls="mobile-menu">
+          <span class="sr-only">Open navigation</span>
+          <span class="menu-line"></span>
+          <span class="menu-line"></span>
+        </button>
+      </div>
+    </header>
+
+    <nav class="mobile-menu" id="mobile-menu" aria-label="Mobile navigation" hidden>
+      <a href="#surface">Surface <span aria-hidden="true">↘</span></a>
+      <a href="#details">Details <span aria-hidden="true">↘</span></a>
+      <a href="#download">Download <span aria-hidden="true">↘</span></a>
+      <a href="https://github.com/misswell/deepseek-harness-desk" target="_blank" rel="noreferrer">GitHub <span aria-hidden="true">↗</span></a>
+    </nav>
+
+    <main id="main-content">
+      <section class="hero section-wrap" id="top" aria-labelledby="hero-title">
+        <div class="hero-copy reveal">
+          <p class="eyebrow"><span class="status-dot"></span> Independent desktop client · v0.3.35</p>
+          <h1 id="hero-title">Keep the<br /><span class="hero-emphasis">harness</span><br />in your flow.</h1>
+          <p class="hero-lede">
+            DeepSeek Harness, in a focused desktop shell. Start it, get out of its way, and come back to the work that matters.
+          </p>
+          <div class="hero-actions">
+            <a class="button button-primary" href="https://github.com/misswell/deepseek-harness-desk/releases/latest" target="_blank" rel="noreferrer">
+              Download latest
+              <span class="button-arrow" aria-hidden="true">↗</span>
+            </a>
+            <a class="button button-quiet" href="#surface">See what stays simple <span aria-hidden="true">↓</span></a>
+          </div>
+          <div class="hero-note">
+            <span class="note-rule" aria-hidden="true"></span>
+            <span>Open source · Free to use · macOS / Windows / Linux</span>
+          </div>
+        </div>
+
+        <div class="hero-visual reveal reveal-delay" aria-label="Preview of the Harness Desk desktop surface">
+          <div class="visual-rings" aria-hidden="true">
+            <span class="ring ring-one"></span>
+            <span class="ring ring-two"></span>
+            <span class="ring ring-three"></span>
+            <span class="ring-cross ring-cross-one"></span>
+            <span class="ring-cross ring-cross-two"></span>
+          </div>
+
+          <div class="visual-caption visual-caption-top"><span>01</span> quiet infrastructure</div>
+          <div class="visual-caption visual-caption-bottom">built around your attention <span>↘</span></div>
+
+          <div class="app-window" role="img" aria-label="Stylized preview of the DeepSeek Harness Desk window">
+            <div class="window-topbar">
+              <div class="window-controls" aria-hidden="true"><i></i><i></i><i></i></div>
+              <span class="window-titlebar">DEEPSEEK / HARNESS</span>
+              <span class="window-live"><span class="status-dot"></span> LIVE</span>
+            </div>
+            <div class="window-body">
+              <aside class="window-sidebar" aria-hidden="true">
+                <span class="sidebar-logo">DH</span>
+                <span class="sidebar-item sidebar-item-active">⌁ <b>Harness</b></span>
+                <span class="sidebar-item">◌ <b>Runtime</b></span>
+                <span class="sidebar-item">⌘ <b>Events</b></span>
+                <span class="sidebar-item">⚙ <b>Settings</b></span>
+                <span class="sidebar-spacer"></span>
+                <span class="sidebar-version">0.3.35</span>
+              </aside>
+              <div class="window-content">
+                <div class="content-topline">
+                  <span>LOCAL SESSION</span>
+                  <span class="content-port">PORT 3080</span>
+                </div>
+                <div class="content-heading">
+                  <span class="content-kicker">READY WHEN YOU ARE</span>
+                  <strong>Make room<br />for the good part.</strong>
+                </div>
+                <div class="content-status-row">
+                  <div class="status-card status-card-main">
+                    <span class="status-card-label">Harness</span>
+                    <strong><span class="status-dot"></span> Running</strong>
+                    <small>Health check passed</small>
+                  </div>
+                  <div class="status-card">
+                    <span class="status-card-label">Memory</span>
+                    <strong>Held steady</strong>
+                    <small>Page ready to release</small>
+                  </div>
+                </div>
+                <div class="content-log">
+                  <div class="log-heading"><span>EVENT STREAM</span><span>just now</span></div>
+                  <p><span class="log-bullet log-blue"></span> Session connected <time>00:00:12</time></p>
+                  <p><span class="log-bullet log-lime"></span> Waiting for your next move <time>00:00:04</time></p>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <span class="visual-sticker sticker-left">NO COMMAND<br />LINE TANGLES</span>
+          <span class="visual-sticker sticker-right">A DESK FOR<br />THE HARNESS</span>
+        </div>
+      </section>
+
+      <section class="signal-strip section-wrap reveal" aria-label="Product summary">
+        <div class="signal-item"><span class="signal-index">01</span><strong>One focused window</strong><span>for the official Harness web UI</span></div>
+        <div class="signal-item"><span class="signal-index">02</span><strong>Less setup friction</strong><span>with runtime and ports handled</span></div>
+        <div class="signal-item"><span class="signal-index">03</span><strong>Room to think</strong><span>with quiet memory and event care</span></div>
+      </section>
+
+      <section class="intro-section section-wrap" id="surface" aria-labelledby="surface-title">
+        <div class="section-marker reveal"><span>THE SURFACE</span><span>02 / 04</span></div>
+        <div class="intro-layout">
+          <h2 class="display-title reveal" id="surface-title">The useful part<br /><em>stays close.</em></h2>
+          <div class="intro-copy reveal reveal-delay">
+            <p class="large-copy">A small desktop layer between you and the plumbing.</p>
+            <p>
+              Harness Desk gives the official DeepSeek Harness experience a home that feels native to your day: a clean window, a tray icon when you need distance, and the right amount of help when something is starting up.
+            </p>
+            <a class="text-link" href="https://github.com/misswell/deepseek-harness-desk" target="_blank" rel="noreferrer">Explore the source <span aria-hidden="true">↗</span></a>
+          </div>
+        </div>
+      </section>
+
+      <section class="feature-section section-wrap" id="details" aria-labelledby="details-title">
+        <div class="feature-heading reveal">
+          <div class="section-marker"><span>WHY IT FEELS LIGHTER</span><span>03 / 04</span></div>
+          <h2 class="display-title" id="details-title">Less interface.<br /><em>More momentum.</em></h2>
+        </div>
+
+        <div class="feature-grid">
+          <article class="feature-card feature-card-blue reveal">
+            <div class="feature-card-top"><span>01</span><span class="feature-glyph" aria-hidden="true">↗</span></div>
+            <h3>Start without the detour.</h3>
+            <p>If dsh is already on your machine, Harness Desk finds it. If it is not, the app can bring along an isolated runtime with clear, guided setup.</p>
+            <div class="feature-meta"><span class="meta-line"></span><span>SETUP / AUTOMATED</span></div>
+          </article>
+
+          <article class="feature-card feature-card-ink reveal reveal-delay-short">
+            <div class="feature-card-top"><span>02</span><span class="feature-glyph" aria-hidden="true">⌁</span></div>
+            <h3>Let the window do the watching.</h3>
+            <p>It chooses an available port between 3080 and 3099, checks the local service, and keeps recovery work close at hand when a process gets interrupted.</p>
+            <div class="feature-meta"><span class="meta-line"></span><span>HEALTH / RECOVERY</span></div>
+          </article>
+
+          <article class="feature-card feature-card-lime reveal reveal-delay">
+            <div class="feature-card-top"><span>03</span><span class="feature-glyph" aria-hidden="true">◌</span></div>
+            <h3>Keep the background quiet.</h3>
+            <p>Use the tray or menu bar to step away. Get a notification for a completed task, a question, or an approval request when you are not looking.</p>
+            <div class="feature-meta"><span class="meta-line"></span><span>EVENTS / ATTENTION</span></div>
+          </article>
+
+          <article class="feature-card feature-card-paper reveal reveal-delay-short">
+            <div class="feature-card-top"><span>04</span><span class="feature-glyph" aria-hidden="true">↘</span></div>
+            <h3>Give memory somewhere to go.</h3>
+            <p>When the page is hidden, unfocused, or idle, the desktop client can release the WebView while keeping the Harness service and session state alive.</p>
+            <div class="feature-meta"><span class="meta-line"></span><span>MEMORY / CONTINUITY</span></div>
+          </article>
+        </div>
+      </section>
+
+      <section class="manifesto-section section-wrap reveal" aria-labelledby="manifesto-title">
+        <div class="manifesto-mark" aria-hidden="true">DH</div>
+        <div class="manifesto-copy">
+          <p class="eyebrow"><span class="status-dot"></span> A small independent project</p>
+          <h2 id="manifesto-title">The agent can be<br /><span>the interesting part.</span></h2>
+          <p>Harness Desk is an open-source, third-party desktop client for DeepSeek Harness. It stays intentionally close to the tool it carries.</p>
+        </div>
+        <div class="manifesto-index" aria-hidden="true">03<br /><span>—</span><br />04</div>
+      </section>
+
+      <section class="download-section section-wrap" id="download" aria-labelledby="download-title">
+        <div class="download-card reveal">
+          <div class="download-copy">
+            <div class="section-marker"><span>TAKE IT WITH YOU</span><span>04 / 04</span></div>
+            <h2 class="display-title" id="download-title">Make a little<br /><em>room for Harness.</em></h2>
+            <p>Get the latest signed release, or read the source and make it yours.</p>
+          </div>
+          <div class="download-actions">
+            <a class="button button-dark" href="https://github.com/misswell/deepseek-harness-desk/releases/latest" target="_blank" rel="noreferrer">
+              Open latest release <span class="button-arrow" aria-hidden="true">↗</span>
+            </a>
+            <div class="release-info"><span class="release-dot"></span><span>v0.3.35 · macOS / Windows / Linux</span></div>
+            <div class="release-info release-info-muted"><span>macOS packages are signed and notarized.</span></div>
+          </div>
+        </div>
+        <p class="legal-note">DeepSeek Harness Desk is an independent third-party project. It is not affiliated with, endorsed by, or sponsored by DeepSeek AI.</p>
+      </section>
+    </main>
+
+    <footer class="site-footer section-wrap">
+      <a class="footer-brand" href="#top"><span class="brand-mark"><img src="./assets/deepseek-harness-icon.png" alt="" /></span><span>DeepSeek Harness Desk</span></a>
+      <p>Keep the harness in your flow.</p>
+      <div class="footer-links">
+        <a href="https://github.com/misswell/deepseek-harness-desk" target="_blank" rel="noreferrer">GitHub ↗</a>
+        <a href="https://github.com/misswell/deepseek-harness-desk/releases/latest" target="_blank" rel="noreferrer">Releases ↗</a>
+        <span>© <span data-year>2026</span></span>
+      </div>
+    </footer>
+
+    <script type="module" src="./script.js"></script>
+  </body>
+</html>
