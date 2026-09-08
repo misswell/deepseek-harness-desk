@@ -40,19 +40,28 @@ const year = document.querySelector("[data-year]");
 if (year) year.textContent = String(new Date().getFullYear());
 
 const revealItems = document.querySelectorAll(".reveal");
-if ("IntersectionObserver" in window) {
-  const revealObserver = new IntersectionObserver(
-    (entries, observer) => {
-      entries.forEach((entry) => {
-        if (!entry.isIntersecting) return;
-        entry.target.classList.add("is-visible");
-        observer.unobserve(entry.target);
-      });
-    },
-    { rootMargin: "0px 0px -8% 0px", threshold: 0.08 },
-  );
+const revealAll = () => revealItems.forEach((item) => item.classList.add("is-visible"));
 
-  revealItems.forEach((item) => revealObserver.observe(item));
+if (typeof window.IntersectionObserver === "function") {
+  try {
+    const revealObserver = new IntersectionObserver(
+      (entries, observer) => {
+        entries.forEach((entry) => {
+          if (!entry.isIntersecting) return;
+          entry.target.classList.add("is-visible");
+          observer.unobserve(entry.target);
+        });
+      },
+      { rootMargin: "0px 0px -8% 0px", threshold: 0.08 },
+    );
+
+    revealItems.forEach((item) => revealObserver.observe(item));
+  } catch {
+    revealAll();
+  }
 } else {
-  revealItems.forEach((item) => item.classList.add("is-visible"));
+  revealAll();
 }
+
+// A delayed callback should never leave the page in a partially revealed state.
+window.setTimeout(revealAll, 1200);
