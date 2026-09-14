@@ -494,6 +494,7 @@ function renderStatus() {
     state.framePid = nextPid;
     elements.frameLoading.textContent = t("frame.loading");
     elements.frameLoading.classList.remove("hidden");
+    setHarnessFrameReady(false);
     if (elements.frame.getAttribute("src") === state.status.url) {
       // Same URL but a new Harness process: assigning the identical src is a
       // no-op, so blank the frame first to force a fresh navigation to the
@@ -501,6 +502,7 @@ function renderStatus() {
       elements.frame.removeAttribute("src");
     }
     elements.frame.src = state.status.url;
+    scheduleHarnessFrameReveal();
   }
   renderAppUpdate();
   renderDshUpdate();
@@ -739,8 +741,72 @@ function unloadHarnessFrame() {
   state.frameUnloaded = true;
   state.frameUrl = "";
   state.framePid = null;
-  elements.frame.removeAttribute("src");
+  blankHarnessFrame();
   elements.frameLoading.classList.add("hidden");
+}
+
+// The Harness iframe is cross-origin, so it renders the embedded document's own
+// default base surface. While the frame is blank (about:blank) or still
+// navigating, that surface is white and flashed over the dark shell. Keep the
+// iframe hidden until a real Harness document has loaded so the themed
+// `.frame-container` background (black in dark mode) stays visible instead, and
+// only then reveal it.
+const FRAME_REVEAL_FALLBACK_MS = 4000;
+let frameRevealTimer = null;
+
+function clearFrameRevealTimer() {
+  if (frameRevealTimer) {
+    clearTimeout(frameRevealTimer);
+    frameRevealTimer = null;
+  }
+}
+
+function frameDocumentIsCurrent() {
+  const src = elements.frame.getAttribute("src");
+  return Boolean(src) && !state.frameUnloaded && state.frameUrl === src;
+}
+
+// Weaker check for the safety net: any intended (non-blank) source is enough,
+// since blanking clears the timer that drives the fallback.
+function frameHasUsableSource() {
+  return Boolean(elements.frame.getAttribute("src")) && !state.frameUnloaded;
+}
+
+function setHarnessFrameReady(ready) {
+  if (!ready) clearFrameRevealTimer();
+  elements.frameContainer.classList.toggle("frame-ready", ready === true);
+}
+
+// Blank the frame and drop the reveal state: removing `src` navigates to
+// about:blank, which must never be shown.
+function blankHarnessFrame() {
+  setHarnessFrameReady(false);
+  elements.frame.removeAttribute("src");
+}
+
+function markHarnessFrameReady() {
+  if (!frameDocumentIsCurrent()) return;
+  elements.frameLoading.classList.add("hidden");
+  // Give the freshly loaded Harness document a couple of frames to paint its
+  // own themed background before the iframe becomes visible. The scheduled
+  // fallback stays armed as a backstop if animation frames are throttled.
+  requestAnimationFrame(() => {
+    requestAnimationFrame(() => {
+      if (frameDocumentIsCurrent()) elements.frameContainer.classList.add("frame-ready");
+    });
+  });
+}
+
+// WebKit can cancel a frame load, in which case `load` never fires. Never leave
+// the Harness page permanently hidden behind the reveal gate.
+function scheduleHarnessFrameReveal() {
+  clearFrameRevealTimer();
+  frameRevealTimer = window.setTimeout(() => {
+    frameRevealTimer = null;
+    if (!frameHasUsableSource()) return;
+    elements.frameLoading.classList.add("hidden");
+    elements.frameContainer.classList.add("frame-ready");
+  }, FRAME_REVEAL_FALLBACK_MS);
 }
 
 function restoreHarnessFrame() {
@@ -781,7 +847,7 @@ function recycleHarnessFrame() {
   if (!state.status?.running || !state.status?.url) return;
   state.frameUrl = "";
   state.framePid = null;
-  elements.frame.removeAttribute("src");
+  blankHarnessFrame();
   renderStatus();
 }
 
@@ -829,7 +895,7 @@ async function refreshStatus() {
       state.phase = "idle";
       state.frameUrl = "";
       state.framePid = null;
-      elements.frame.removeAttribute("src");
+      blankHarnessFrame();
     }
     renderStatus();
   } catch (error) {
@@ -905,7 +971,7 @@ async function stopHarness() {
     state.phase = "idle";
     state.frameUrl = "";
     state.framePid = null;
-    elements.frame.removeAttribute("src");
+    blankHarnessFrame();
     setToast(t("toast.harnessStopped"));
   } catch (error) {
     setToast(errorMessage(error), true);
@@ -1120,10 +1186,13 @@ function bindEvents() {
   elements.settingsOpenLogsButton.addEventListener("click", openLogs);
   elements.settingsRefreshHarnessButton.addEventListener("click", refreshStatus);
   elements.frame.addEventListener("load", () => {
-    elements.frameLoading.classList.add("hidden");
     bindFrameZoomShortcuts();
+    // Ignore the about:blank load triggered by blanking the frame; only a real
+    // Harness document may be revealed.
+    markHarnessFrameReady();
   });
   elements.frame.addEventListener("error", () => {
+    setHarnessFrameReady(false);
     elements.frameLoading.textContent = t("frame.failed");
     elements.frameLoading.classList.remove("hidden");
   });

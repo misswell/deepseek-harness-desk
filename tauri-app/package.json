@@ -1,7 +1,7 @@
 {
   "name": "deepseek-harness-desk",
   "private": true,
-  "version": "0.3.38",
+  "version": "0.3.39",
   "type": "module",
   "engines": {
     "node": ">=18"

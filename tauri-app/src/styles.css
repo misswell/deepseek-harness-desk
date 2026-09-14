@@ -93,8 +93,28 @@ select:focus-visible {
   width: 100%;
   height: 100%;
   border: 0;
-  background: var(--surface);
+  /* The embedded Harness document paints its own background, so keep the
+     iframe surface transparent and let the themed container show through
+     while a document is blank or still loading. */
+  background: transparent;
+  color-scheme: light;
+  /* The iframe is cross-origin, so it renders the embedded document's default
+     (white) base surface whenever it is blank or mid-navigation. Keep it
+     invisible until a real Harness document has loaded, otherwise that white
+     surface flashes over the dark shell. Reveal without a transition: a CSS
+     animation would tie visibility to animation frames, which WebKit pauses
+     while the window is hidden. */
+  opacity: 0;
   -webkit-app-region: no-drag;
+}
+
+.frame-container.frame-ready iframe {
+  opacity: 1;
+}
+
+/* A not-yet-revealed frame must not swallow clicks meant for the shell. */
+.frame-container:not(.frame-ready) iframe {
+  pointer-events: none;
 }
 
 .frame-loading {
@@ -946,9 +966,15 @@ button:disabled {
   --shadow: 0 10px 30px rgba(0, 0, 0, 0.35);
 }
 
-:root[data-theme="dark"] .frame-container,
-:root[data-theme="dark"] .frame-container iframe {
+:root[data-theme="dark"] .frame-container {
   background: #1c1c1e;
+}
+
+/* Keep the blank/loading iframe surface dark as well, so even a document that
+   paints before the loader reveals the frame never shows white in dark mode. */
+:root[data-theme="dark"] .frame-container iframe {
+  background: transparent;
+  color-scheme: dark;
 }
 
 :root[data-theme="dark"] .startup-status {
