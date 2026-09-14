@@ -701,8 +701,9 @@ dependencies = [
 
 [[package]]
 name = "deepseek-harness-desk"
-version = "0.3.39"
+version = "0.3.40"
 dependencies = [
+ "block2",
  "futures-util",
  "objc2",
  "objc2-app-kit",

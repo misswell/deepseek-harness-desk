@@ -2,7 +2,7 @@
 
 DeepSeek Harness Desk 当前正式版是基于 **Tauri v2** 构建的跨平台桌面客户端，不是 SwiftUI 原生应用。应用代码位于 [`tauri-app`](tauri-app)，使用 Rust、WebView 和系统原生能力，支持 macOS、Windows 与 Linux。
 
-当前版本：0.3.39。安装包请从 [GitHub Releases](https://github.com/misswell/deepseek-harness-desk/releases/latest) 下载。
+当前版本：0.3.40。安装包请从 [GitHub Releases](https://github.com/misswell/deepseek-harness-desk/releases/latest) 下载。
 官网：[harness.liuguofeng.com](https://harness.liuguofeng.com/)
 
 ## 开发
@@ -24,6 +24,8 @@ Tauri 版功能包括：启动、停止、重启 Harness；自动选择 `3080–
 应用界面支持国际化（中文 / English）：默认跟随系统语言，也可在“设置 → 通用 → 界面语言”手动切换；托盘菜单和系统通知会随语言一起切换。Harness 网页本身按系统语言显示（由 Harness 内部提供）。
 
 主窗口支持快捷键缩放：macOS 使用 `⌘ +` / `⌘ -` / `⌘ 0`，Windows 和 Linux 使用 `Ctrl +` / `Ctrl -` / `Ctrl 0`，缩放范围为 75%–175%，设置会自动保存。
+
+支持向 Harness 输入框粘贴图片和文件：macOS 下 `⌘V` 粘贴截图或复制的图片、在访达中复制的文件都会直接变成会话附件，也可以直接把文件从访达拖进窗口。Harness 网页自身对文件粘贴是静默失败的，客户端因此注入桥接脚本，把文件改交给输入框自带的附件入口（回形针按钮走的同一条路径）；Harness 只接受 PNG/JPEG/WebP/GIF，其它图片格式（例如 TIFF）会在页面内转成 PNG，单次粘贴超过 32MB 的内容会跳过并提示。
 
 macOS 会分别发布 Apple Silicon（arm64）和 Intel（x86_64）安装包，用户可按处理器架构下载；Windows 和 Linux 也会随版本提供对应安装包。
 

@@ -3303,6 +3303,9 @@ fn activate_macos_application() {
 
 #[cfg(target_os = "macos")]
 fn main_window_webview_configuration() -> Retained<WKWebViewConfiguration> {
+    use objc2::MainThreadOnly;
+    use objc2_web_kit::{WKUserScript, WKUserScriptInjectionTime};
+
     let marker = objc2::MainThreadMarker::new()
         .expect("WKWebView configuration must be created on the main thread");
     let config = unsafe { WKWebViewConfiguration::new(marker) };
@@ -3317,7 +3320,289 @@ fn main_window_webview_configuration() -> Retained<WKWebViewConfiguration> {
             ns_string!("processDisplayName"),
         );
     }
+
+    // Paste bridge: the Harness UI runs in a cross-origin iframe, so the shell
+    // frame can not reach into it. Inject the bridge into *every* frame at
+    // document start; the native paste handler then only has to hand the
+    // payload to the shell frame.
+    let source = NSString::from_str(PASTE_BRIDGE_SCRIPT);
+    let user_script = unsafe {
+        WKUserScript::initWithSource_injectionTime_forMainFrameOnly(
+            WKUserScript::alloc(marker),
+            &source,
+            WKUserScriptInjectionTime::AtDocumentStart,
+            false,
+        )
+    };
+    unsafe { config.userContentController().addUserScript(&user_script) };
     config
+}
+
+/// Injected into every frame of the main WebView (shell frame and the Harness
+/// iframe) so the native `NSPasteboard` payload can reach the Harness
+/// composer. See `tauri-app/src/paste-bridge.js`.
+#[cfg(target_os = "macos")]
+const PASTE_BRIDGE_SCRIPT: &str = include_str!("../../src/paste-bridge.js");
+
+#[cfg(target_os = "macos")]
+mod paste_bridge {
+    use std::path::PathBuf;
+    use std::ptr::NonNull;
+    use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+
+    use block2::RcBlock;
+    use objc2_app_kit::{
+        NSEvent, NSEventMask, NSEventModifierFlags, NSPasteboard, NSPasteboardItem,
+        NSPasteboardTypeFileURL, NSPasteboardTypePNG, NSPasteboardTypeTIFF,
+    };
+    use objc2_foundation::{NSData, NSDataBase64EncodingOptions, NSString, NSURL};
+    use tauri::{AppHandle, Manager, Runtime};
+
+    /// Total pasteboard payload we are willing to move into the page. The
+    /// Harness caps images far below this; this only keeps a runaway file copy
+    /// from building a giant JS string.
+    const MAX_TOTAL_BYTES: usize = 32 * 1024 * 1024;
+    /// Physical `V` key on ANSI and ISO layouts.
+    const V_KEY_CODE: u16 = 9;
+    /// `NSEvent.charactersIgnoringModifiers` for a printable `v`.
+    const V_CHARACTER: &str = "v";
+    /// Image flavors to look for, most preferred first. The Harness attachment
+    /// store only accepts png/jpeg/webp/gif, so the frame bridge re-encodes any
+    /// other flavor (TIFF shows up for Preview and Finder preview copies).
+    const IMAGE_FLAVORS: [(&str, &str); 2] = [
+        ("image/png", "pasted-image.png"),
+        ("image/tiff", "pasted-image.tiff"),
+    ];
+
+    static MONITOR_INSTALLED: AtomicBool = AtomicBool::new(false);
+    static PASTE_SEQUENCE: AtomicU64 = AtomicU64::new(1);
+
+    struct ClipboardFile {
+        name: String,
+        media_type: String,
+        bytes: Vec<u8>,
+    }
+
+    struct ClipboardPayload {
+        files: Vec<ClipboardFile>,
+        skipped: Vec<String>,
+    }
+
+    /// Installs a local key monitor that turns `Cmd+V` with a file or image
+    /// pasteboard into a bridge call. Plain text pastes are returned unchanged
+    /// so the regular responder chain and menu handling stay untouched.
+    pub fn install<R: Runtime>(app: &AppHandle<R>) {
+        if MONITOR_INSTALLED.swap(true, Ordering::SeqCst) {
+            return;
+        }
+        let handle = app.clone();
+        let block = RcBlock::new(move |event: NonNull<NSEvent>| -> *mut NSEvent {
+            let event_ref = unsafe { event.as_ref() };
+            if !is_paste_shortcut(event_ref) {
+                return event.as_ptr();
+            }
+            let Some(payload) = read_pasteboard() else {
+                // No files or images: let WebKit paste the text itself.
+                return event.as_ptr();
+            };
+            deliver(&handle, payload);
+            // Swallow the keystroke: WebKit would otherwise paste nothing (or
+            // an inline image) on top of the bridged attachment.
+            std::ptr::null_mut()
+        });
+        let monitor = unsafe {
+            NSEvent::addLocalMonitorForEventsMatchingMask_handler(NSEventMask::KeyDown, &block)
+        };
+        // The monitor lives for the whole application; leak the token so it is
+        // never removed and the block keeps its captured app handle.
+        if let Some(monitor) = monitor {
+            std::mem::forget(monitor);
+        } else {
+            MONITOR_INSTALLED.store(false, Ordering::SeqCst);
+        }
+        std::mem::forget(block);
+    }
+
+    fn is_paste_shortcut(event: &NSEvent) -> bool {
+        let flags = event.modifierFlags();
+        if !flags.contains(NSEventModifierFlags::Command) {
+            return false;
+        }
+        if flags.contains(NSEventModifierFlags::Option)
+            || flags.contains(NSEventModifierFlags::Control)
+        {
+            return false;
+        }
+        if event.keyCode() == V_KEY_CODE {
+            return true;
+        }
+        match event.charactersIgnoringModifiers() {
+            Some(characters) => characters.to_string().eq_ignore_ascii_case(V_CHARACTER),
+            None => false,
+        }
+    }
+
+    fn read_pasteboard() -> Option<ClipboardPayload> {
+        let pasteboard = NSPasteboard::generalPasteboard();
+        let mut files: Vec<ClipboardFile> = Vec::new();
+        let mut skipped: Vec<String> = Vec::new();
+        let mut total: usize = 0;
+
+        if let Some(items) = pasteboard.pasteboardItems() {
+            for item in items.iter() {
+                if let Some(file) = file_from_item(&item) {
+                    push_file(file, &mut files, &mut skipped, &mut total);
+                    continue;
+                }
+                if let Some(file) = image_from_item(&item) {
+                    push_file(file, &mut files, &mut skipped, &mut total);
+                }
+            }
+        }
+
+        // Some sources put the image on the pasteboard rather than on a
+        // concrete item (`screencapture -c`, browsers copying an image).
+        if files.is_empty() {
+            for (media_type, name) in IMAGE_FLAVORS {
+                if let Some(data) = image_data(&pasteboard, media_type) {
+                    push_file(
+                        ClipboardFile {
+                            name: name.to_string(),
+                            media_type: media_type.to_string(),
+                            bytes: data,
+                        },
+                        &mut files,
+                        &mut skipped,
+                        &mut total,
+                    );
+                    break;
+                }
+            }
+        }
+
+        (!files.is_empty()).then_some(ClipboardPayload { files, skipped })
+    }
+
+    fn push_file(
+        file: ClipboardFile,
+        files: &mut Vec<ClipboardFile>,
+        skipped: &mut Vec<String>,
+        total: &mut usize,
+    ) {
+        if *total + file.bytes.len() > MAX_TOTAL_BYTES {
+            skipped.push(file.name);
+            return;
+        }
+        *total += file.bytes.len();
+        files.push(file);
+    }
+
+    fn file_from_item(item: &NSPasteboardItem) -> Option<ClipboardFile> {
+        let value = unsafe { item.stringForType(NSPasteboardTypeFileURL) }?;
+        let path = file_url_path(&value.to_string())?;
+        let bytes = std::fs::read(&path).ok()?;
+        let name = PathBuf::from(&path)
+            .file_name()
+            .map(|name| name.to_string_lossy().into_owned())
+            .unwrap_or_else(|| "pasted".to_string());
+        Some(ClipboardFile {
+            media_type: media_type_for_path(&path),
+            name,
+            bytes,
+        })
+    }
+
+    fn image_from_item(item: &NSPasteboardItem) -> Option<ClipboardFile> {
+        for (media_type, name) in IMAGE_FLAVORS {
+            let Some(data) = (unsafe {
+                match media_type {
+                    "image/png" => item.dataForType(NSPasteboardTypePNG),
+                    _ => item.dataForType(NSPasteboardTypeTIFF),
+                }
+            }) else {
+                continue;
+            };
+            return Some(ClipboardFile {
+                name: name.to_string(),
+                media_type: media_type.to_string(),
+                bytes: data.to_vec(),
+            });
+        }
+        None
+    }
+
+    fn image_data(pasteboard: &NSPasteboard, media_type: &str) -> Option<Vec<u8>> {
+        let data = unsafe {
+            match media_type {
+                "image/png" => pasteboard.dataForType(NSPasteboardTypePNG),
+                _ => pasteboard.dataForType(NSPasteboardTypeTIFF),
+            }
+        }?;
+        Some(data.to_vec())
+    }
+
+    fn file_url_path(value: &str) -> Option<String> {
+        let value = NSString::from_str(value);
+        let url = NSURL::URLWithString(&value)?;
+        if !url.isFileURL() {
+            return None;
+        }
+        let path = url.path()?;
+        Some(path.to_string())
+    }
+
+    fn media_type_for_path(path: &str) -> String {
+        let extension = PathBuf::from(path)
+            .extension()
+            .map(|extension| extension.to_string_lossy().to_ascii_lowercase())
+            .unwrap_or_default();
+        match extension.as_str() {
+            "png" => "image/png",
+            "jpg" | "jpeg" => "image/jpeg",
+            "webp" => "image/webp",
+            "gif" => "image/gif",
+            "tif" | "tiff" => "image/tiff",
+            "pdf" => "application/pdf",
+            "txt" | "log" | "md" => "text/plain",
+            "json" => "application/json",
+            "csv" => "text/csv",
+            "zip" => "application/zip",
+            _ => "application/octet-stream",
+        }
+        .to_string()
+    }
+
+    fn deliver<R: Runtime>(app: &AppHandle<R>, payload: ClipboardPayload) {
+        let Some(window) = app.get_webview_window("main") else {
+            return;
+        };
+        let id = PASTE_SEQUENCE.fetch_add(1, Ordering::SeqCst);
+        let files = payload
+            .files
+            .into_iter()
+            .map(|file| {
+                serde_json::json!({
+                    "name": file.name,
+                    "type": file.media_type,
+                    "data": base64(&file.bytes),
+                })
+            })
+            .collect::<Vec<_>>();
+        let call = serde_json::json!({
+            "id": id,
+            "files": files,
+            "skipped": payload.skipped,
+        });
+        // The payload is JSON, so it is also valid JavaScript to inline.
+        let script = format!("window.__dshDeskPasteFiles && window.__dshDeskPasteFiles({call});");
+        let _ = window.eval(&script);
+    }
+
+    fn base64(bytes: &[u8]) -> String {
+        let data = NSData::with_bytes(bytes);
+        data.base64EncodedStringWithOptions(NSDataBase64EncodingOptions::empty())
+            .to_string()
+    }
 }
 
 #[cfg(target_os = "macos")]
@@ -3720,6 +4005,8 @@ pub fn run() {
             setup_app_menu(app)?;
             let window = create_main_window(app.handle())?;
             sync_window_background(&window);
+            #[cfg(target_os = "macos")]
+            paste_bridge::install(app.handle());
             #[cfg(feature = "tray-icon")]
             {
                 let state = app.state::<HarnessState>().inner().clone();
