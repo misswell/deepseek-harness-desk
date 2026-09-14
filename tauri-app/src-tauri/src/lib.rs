@@ -3320,6 +3320,23 @@ fn main_window_webview_configuration() -> Retained<WKWebViewConfiguration> {
     config
 }
 
+#[cfg(target_os = "macos")]
+fn current_appearance_theme() -> Option<Theme> {
+    use objc2::MainThreadMarker;
+    use objc2_app_kit::NSApplication;
+
+    let marker = MainThreadMarker::new()?;
+    let name = NSApplication::sharedApplication(marker)
+        .effectiveAppearance()
+        .name()
+        .to_string();
+    Some(if name.contains("Dark") {
+        Theme::Dark
+    } else {
+        Theme::Light
+    })
+}
+
 fn create_main_window<R: tauri::Runtime>(app: &AppHandle<R>) -> tauri::Result<WebviewWindow<R>> {
     let config = app
         .config()
@@ -3330,7 +3347,17 @@ fn create_main_window<R: tauri::Runtime>(app: &AppHandle<R>) -> tauri::Result<We
         .ok_or_else(|| tauri::Error::AssetNotFound("缺少 main 窗口配置".to_string()))?;
     let builder = WebviewWindowBuilder::from_config(app, config)?;
     #[cfg(target_os = "macos")]
-    let builder = builder.with_webview_configuration(main_window_webview_configuration());
+    let builder = {
+        // The WKWebView keeps an opaque white surface until the page's first
+        // paint. Passing the color at build time is the only way wry disables
+        // that white surface (drawsBackground) for the recreated window; a
+        // post-build set_background_color lands after the white first frame.
+        let builder = builder.with_webview_configuration(main_window_webview_configuration());
+        match current_appearance_theme() {
+            Some(theme) => builder.background_color(window_background_color(theme)),
+            None => builder,
+        }
+    };
     let window = builder.build()?;
     sync_window_background(&window);
     Ok(window)
@@ -3745,7 +3772,20 @@ pub fn run() {
                     let _ = window.app_handle().emit("window-hidden", ());
                 }
             } else if let WindowEvent::ThemeChanged(theme) = event {
-                let _ = window.set_background_color(Some(window_background_color(*theme)));
+                // Route through the WebviewWindow so the color reaches both the
+                // native window and the WKWebView surface (the Window-only API
+                // never propagates to the webview layer).
+                let color = Some(window_background_color(*theme));
+                match window
+                    .app_handle()
+                    .get_webview_window(window.label())
+                    .map(|webview_window| webview_window.set_background_color(color))
+                {
+                    Some(Ok(())) => {}
+                    _ => {
+                        let _ = window.set_background_color(color);
+                    }
+                }
             } else if let WindowEvent::Focused(true) = event {
                 // The user is back — clear the attention badge and let the
                 // shell reload the Harness page if it was unloaded on unfocus.
