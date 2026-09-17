@@ -1230,6 +1230,12 @@ async function listenForOutput() {
     renderRuntime();
   });
   await listen("open-settings", () => showPanel(elements.settingsPanel));
+  // External links are handed to the system browser by the native layer; the
+  // only thing the shell can add is telling the user when that launch failed.
+  await listen("link-open-failed", (event) => {
+    const url = event?.payload?.url;
+    setToast(url ? t("toast.linkFailed", { url }) : t("toast.linkFailed.generic"), true);
+  });
   await listen("zoom-in", () => applyZoom(state.zoom + ZOOM_STEP, { announce: true }));
   await listen("zoom-out", () => applyZoom(state.zoom - ZOOM_STEP, { announce: true }));
   await listen("zoom-reset", () => applyZoom(DEFAULT_ZOOM, { announce: true }));

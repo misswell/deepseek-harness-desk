@@ -701,7 +701,7 @@ dependencies = [
 
 [[package]]
 name = "deepseek-harness-desk"
-version = "0.3.40"
+version = "0.3.41"
 dependencies = [
  "block2",
  "futures-util",

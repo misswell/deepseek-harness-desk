@@ -27,9 +27,11 @@ use objc2_web_kit::WKWebViewConfiguration;
 use tauri::menu::{MenuBuilder, MenuItem, MenuItemKind, SubmenuBuilder};
 use tauri::tray::{MouseButton, TrayIconBuilder, TrayIconEvent};
 use tauri::utils::Theme;
+use tauri::webview::NewWindowResponse;
 use tauri::window::Color;
 use tauri::{
-    AppHandle, Emitter, Manager, RunEvent, State, WebviewWindow, WebviewWindowBuilder, WindowEvent,
+    AppHandle, Emitter, Manager, RunEvent, State, Url, WebviewWindow, WebviewWindowBuilder,
+    WindowEvent,
 };
 
 const PORT_START: u16 = 3080;
@@ -1949,10 +1951,24 @@ async fn install_dsh_update_inner(
     Ok(runtime_status_snapshot(app, state))
 }
 
+/// Opens a web link with the system's default handler (browser or mail
+/// client). Only `http(s)` and `mailto` are accepted: a page must never be able
+/// to hand an arbitrary scheme to the operating system.
 fn open_external_url(url: &str) -> Result<(), String> {
-    if !url.starts_with("https://") {
-        return Err("只允许打开 HTTPS 更新地址。".to_string());
+    if !is_openable_web_url(url) {
+        return Err("只允许打开网页链接。".to_string());
     }
+    launch_url(url)
+}
+
+/// True for the URL shapes the shell allows to leave the app. Deliberately a
+/// prefix check on already-trimmed input so nothing like `javascript:` or a
+/// relative target can slip through.
+fn is_openable_web_url(url: &str) -> bool {
+    url.starts_with("https://") || url.starts_with("http://") || url.starts_with("mailto:")
+}
+
+fn launch_url(url: &str) -> Result<(), String> {
     #[cfg(target_os = "macos")]
     let result = Command::new("open").arg(url).status();
     #[cfg(target_os = "windows")]
@@ -3622,6 +3638,79 @@ fn current_appearance_theme() -> Option<Theme> {
     })
 }
 
+/// What the shell should do with a navigation requested inside the main
+/// WebView.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum NavigationDisposition {
+    /// Keep the navigation inside the app.
+    InApp,
+    /// Cancel it and hand the URL to the system's default handler.
+    External,
+}
+
+/// True for hosts that can only point back at this machine. The Harness runs
+/// on a loopback port that changes on every start, so the check is per host
+/// rather than per exact URL. Only real loopback literals count: a name like
+/// `127.0.0.1.example.com` is somebody else's website.
+fn is_loopback_host(host: &str) -> bool {
+    let host = host.trim_start_matches('[').trim_end_matches(']');
+    if host.eq_ignore_ascii_case("localhost") || host.ends_with(".localhost") {
+        return true;
+    }
+    host.parse::<std::net::IpAddr>()
+        .map(|address| address.is_loopback())
+        .unwrap_or(false)
+}
+
+/// Classifies a navigation requested inside the main WebView.
+///
+/// The shell only ever renders its own `tauri://` document plus the loopback
+/// Harness pages, so an `http(s)` URL pointing anywhere else is a link the user
+/// followed — the Harness renders every web link with `target="_blank"`. WebKit
+/// cannot honour those links on its own: with no new-window handler it drops
+/// the click, and left alone in the same frame it would replace the whole shell
+/// with the site. Both cases belong in the user's browser instead.
+///
+/// Schemes the shell knows nothing about stay in WebKit's hands, so an
+/// installed handler can still answer them.
+fn navigation_disposition(url: &Url) -> NavigationDisposition {
+    match url.scheme() {
+        "http" | "https" => match url.host_str() {
+            Some(host) if is_loopback_host(host) => NavigationDisposition::InApp,
+            _ => NavigationDisposition::External,
+        },
+        "mailto" => NavigationDisposition::External,
+        _ => NavigationDisposition::InApp,
+    }
+}
+
+/// Hands a link to the system's default browser / mail client.
+///
+/// The launcher runs on its own thread: a navigation decision made by WebKit
+/// must not wait for the browser to start, and a failed launch must never take
+/// the click down with it.
+fn open_link_externally<R: tauri::Runtime>(app: &AppHandle<R>, url: &Url) {
+    let target = url.as_str().to_string();
+    let app = app.clone();
+    std::thread::spawn(move || {
+        if let Err(error) = open_external_url(&target) {
+            eprintln!("打开链接失败：{error}");
+            let _ = app.emit("link-open-failed", serde_json::json!({ "url": target }));
+        }
+    });
+}
+
+/// Decides one navigation request from the main WebView.
+fn handle_navigation<R: tauri::Runtime>(app: &AppHandle<R>, url: &Url) -> bool {
+    match navigation_disposition(url) {
+        NavigationDisposition::InApp => true,
+        NavigationDisposition::External => {
+            open_link_externally(app, url);
+            false
+        }
+    }
+}
+
 fn create_main_window<R: tauri::Runtime>(app: &AppHandle<R>) -> tauri::Result<WebviewWindow<R>> {
     let config = app
         .config()
@@ -3631,6 +3720,23 @@ fn create_main_window<R: tauri::Runtime>(app: &AppHandle<R>) -> tauri::Result<We
         .find(|window| window.label == "main")
         .ok_or_else(|| tauri::Error::AssetNotFound("缺少 main 窗口配置".to_string()))?;
     let builder = WebviewWindowBuilder::from_config(app, config)?;
+    let navigation_app = app.clone();
+    let new_window_app = app.clone();
+    let builder = builder
+        // External links leave the app; everything the shell renders itself
+        // (the `tauri://` document and the loopback Harness pages) keeps
+        // navigating in place.
+        .on_navigation(move |url| handle_navigation(&navigation_app, url))
+        .on_new_window(move |url, _features| {
+            // `target="_blank"` links, `window.open` and the link context menu
+            // ask for a window Tauri does not provide. Without a handler WebKit
+            // cancels the request and the click looks dead, so the URL goes to
+            // the default browser and no second window is created.
+            if navigation_disposition(&url) == NavigationDisposition::External {
+                open_link_externally(&new_window_app, &url);
+            }
+            NewWindowResponse::Deny
+        });
     #[cfg(target_os = "macos")]
     let builder = {
         // The WKWebView keeps an opaque white surface until the page's first
@@ -4438,5 +4544,69 @@ mod tests {
         assert!(seen.len() <= MAX_SEEN_INTERACTIONS);
         // A key evicted by the bound is treated as new again.
         assert!(is_new_interaction(&mut seen, "a:1"));
+    }
+
+    fn disposition(url: &str) -> NavigationDisposition {
+        navigation_disposition(&Url::parse(url).expect("test URL"))
+    }
+
+    #[test]
+    fn shell_and_harness_pages_navigate_in_app() {
+        for url in [
+            // The shell document itself, plus the blank/blob/data documents the
+            // frame code uses while loading or unloading the Harness page.
+            "tauri://localhost/index.html",
+            "about:blank",
+            "blob:tauri://localhost/2f0e",
+            "data:text/html,<p>hi</p>",
+            // The Harness origin is a loopback port picked at every start.
+            "http://127.0.0.1:3080/",
+            "http://127.0.0.1:3099/?token=abc",
+            "http://localhost:3080/api/remote.mux",
+            "http://127.6.7.8:3080/",
+            "http://[::1]:3080/",
+        ] {
+            assert_eq!(disposition(url), NavigationDisposition::InApp, "{url}");
+        }
+    }
+
+    #[test]
+    fn web_links_open_in_the_default_browser() {
+        for url in [
+            "https://github.com/misswell/deepseek-harness-desk/releases",
+            "http://example.com/",
+            "mailto:someone@example.com",
+            // A host that merely looks local is still somebody else's website.
+            "https://127.0.0.1.example.com/",
+            "https://notlocalhost.example/",
+        ] {
+            assert_eq!(disposition(url), NavigationDisposition::External, "{url}");
+        }
+    }
+
+    #[test]
+    fn unknown_schemes_stay_with_webkit() {
+        // A scheme the shell does not understand may be answerable by an
+        // installed handler, so it is not treated as a web link.
+        assert_eq!(
+            disposition("deepseek-harness://open?file=notes.md"),
+            NavigationDisposition::InApp
+        );
+        assert_eq!(
+            disposition("vscode://file/tmp/demo.rs"),
+            NavigationDisposition::InApp
+        );
+    }
+
+    #[test]
+    fn external_links_reject_non_web_schemes() {
+        // Only the schemes a browser or mail client can answer are handed over.
+        assert!(is_openable_web_url("https://example.com/release.zip"));
+        assert!(is_openable_web_url("http://example.com/"));
+        assert!(is_openable_web_url("mailto:someone@example.com"));
+        assert!(!is_openable_web_url("file:///etc/passwd"));
+        assert!(!is_openable_web_url("deepseek-harness://open"));
+        assert!(!is_openable_web_url("javascript:alert(1)"));
+        assert!(!is_openable_web_url("//example.com"));
     }
 }

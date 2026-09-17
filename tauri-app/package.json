@@ -1,7 +1,7 @@
 {
   "name": "deepseek-harness-desk",
   "private": true,
-  "version": "0.3.40",
+  "version": "0.3.41",
   "type": "module",
   "engines": {
     "node": ">=18"
@@ -15,6 +15,7 @@
     "test:macos-process-label": "node tests/macos-process-label.test.mjs",
     "test:notification-prefs": "node tests/notification-prefs.test.mjs",
     "test:paste-bridge": "node tests/paste-bridge.test.mjs",
+    "test:external-links": "node tests/external-links.test.mjs",
     "test:update-banner": "node tests/update-banner.test.mjs",
     "pretauri": "node ../scripts/clean_test_packages.mjs",
     "tauri": "tauri"

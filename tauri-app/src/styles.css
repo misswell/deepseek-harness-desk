@@ -849,6 +849,8 @@ button:disabled {
   font-size: 12px;
   font-weight: 550;
   -webkit-app-region: no-drag;
+  /* Link failures mention the URL, which may be longer than the toast. */
+  overflow-wrap: anywhere;
 }
 
 .toast.error {
