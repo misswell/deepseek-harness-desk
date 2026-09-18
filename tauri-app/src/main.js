@@ -13,6 +13,14 @@ import {
 } from "./i18n.js";
 import { notificationPrefsPayload } from "./notification-prefs.js";
 import { shouldShowAppUpdateBanner } from "./update-banner.js";
+import {
+  DSH_CHANNEL_STORAGE_KEY,
+  dshPreviewHintText,
+  dshUpdateStatusText,
+  isPreviewDshVersion,
+  normalizeDshChannel,
+  storedDshChannel,
+} from "./dsh-channel.js";
 
 const tauri = window.__TAURI__;
 const invoke = tauri?.core?.invoke;
@@ -72,6 +80,9 @@ const elements = {
   dshUpdateStatus: document.querySelector("#dsh-update-status"),
   checkDshUpdateButton: document.querySelector("#check-dsh-update-button"),
   installDshUpdateButton: document.querySelector("#install-dsh-update-button"),
+  dshUpdateChannel: document.querySelector("#dsh-update-channel"),
+  dshPreviewHint: document.querySelector("#dsh-preview-hint"),
+  rollbackDshPreviewButton: document.querySelector("#rollback-dsh-preview-button"),
   autoCheckDshToggle: document.querySelector("#auto-check-dsh-toggle"),
   autoInstallDshToggle: document.querySelector("#auto-install-dsh-toggle"),
   updateProgressCard: document.querySelector("#update-progress-card"),
@@ -426,18 +437,30 @@ function renderAppUpdate() {
 function renderDshUpdate() {
   const update = state.dshUpdate;
   if (!update) return;
-  elements.dshCurrentVersion.textContent = update.current_version || (state.runtime?.version || t("common.notInstalled"));
+  // The version columns stay narrow, so they show the raw version; whether the
+  // offered/running build is a preview is spelled out in the status sentence.
+  elements.dshCurrentVersion.textContent =
+    update.current_version || state.runtime?.version || t("common.notInstalled");
   elements.dshLatestVersion.textContent = update.latest_version || t("common.notChecked");
-  elements.dshUpdateStatus.textContent = update.status || t("common.notChecked");
+  elements.dshUpdateStatus.textContent = dshUpdateStatusText(update, t);
+  const hint = dshPreviewHintText(update, t);
+  elements.dshPreviewHint.textContent = hint || "";
+  elements.dshPreviewHint.classList.toggle("hidden", !hint);
   elements.installDshUpdateButton.classList.toggle("hidden", update.available !== true);
   elements.installDshUpdateButton.disabled = update.available !== true || state.busy;
+  // A preview build stays active after switching back to the stable channel
+  // (the launcher always uses the newest managed version), so offer an explicit
+  // way back instead of leaving the user stuck on it.
+  elements.rollbackDshPreviewButton.classList.toggle("hidden", update.current_is_preview !== true);
+  elements.rollbackDshPreviewButton.disabled = state.busy;
 }
 
 function renderStatus() {
   const copy = phaseCopy();
   const running = state.phase === "running" && state.status?.running === true;
   const failed = state.phase === "error";
-  const updatingDsh = state.busyOperation === "dsh-update";
+  const updatingDsh =
+    state.busyOperation === "dsh-update" || state.busyOperation === "dsh-rollback";
 
   elements.startupView.classList.toggle("hidden", running || failed);
   elements.errorView.classList.toggle("hidden", !failed);
@@ -647,19 +670,24 @@ async function installAppUpdate() {
   }
 }
 
+/** Update channel selected in settings; drives which npm dist-tags are read. */
+function currentDshChannel() {
+  return normalizeDshChannel(elements.dshUpdateChannel?.value);
+}
+
 async function checkDshUpdate(automaticallyInstall = false, interactive = true) {
   if (state.updateChecking) return state.dshUpdate;
   state.updateChecking = true;
   elements.checkDshUpdateButton.disabled = true;
   elements.dshUpdateStatus.textContent = t("update.checking");
   try {
-    state.dshUpdate = await call("check_dsh_update");
+    state.dshUpdate = await call("check_dsh_update", { channel: currentDshChannel() });
     renderDshUpdate();
     if (state.dshUpdate.available && automaticallyInstall && elements.autoInstallDshToggle.checked) {
       await installDshUpdate(true);
     } else if (interactive) {
       showUpdatesPanel();
-      setToast(state.dshUpdate.status || t("toast.appUpToDate"));
+      setToast(dshUpdateStatusText(state.dshUpdate, t) || t("toast.appUpToDate"));
     }
     return state.dshUpdate;
   } catch (error) {
@@ -687,15 +715,21 @@ async function installDshUpdate(automatically = false) {
   renderStatus();
   try {
     state.runtime = await call("install_dsh_update", { version });
+    const installed = state.runtime.version || version;
     state.dshUpdate = {
       ...(state.dshUpdate || {}),
-      current_version: state.runtime.version,
+      managed: true,
+      current_version: installed,
+      latest_version: installed,
       available: false,
-      status: t("update.dsh.done", { version: state.runtime.version || version }),
+      preview: false,
+      preview_version: null,
+      current_is_preview: isPreviewDshVersion(installed),
+      status: t("update.dsh.done", { version: installed }),
     };
     setToast(automatically
-      ? t("update.dsh.autoToast", { version })
-      : t("update.dsh.toast", { version }));
+      ? t("update.dsh.autoToast", { version: installed })
+      : t("update.dsh.toast", { version: installed }));
   } catch (error) {
     const message = errorMessage(error);
     renderUpdateProgress({
@@ -713,6 +747,46 @@ async function installDshUpdate(automatically = false) {
     renderRuntime();
     renderDshUpdate();
     renderStatus();
+  }
+}
+
+/**
+ * Remove the preview builds so the launcher falls back to the newest stable
+ * one. Without this a preview installed through the preview channel stays
+ * active forever, because the launcher always runs the newest managed version.
+ */
+async function rollbackDshPreview() {
+  if (state.busy) return;
+  showUpdatesPanel();
+  state.updateKind = "dsh-rollback";
+  state.busyOperation = "dsh-rollback";
+  renderUpdateProgress({
+    title: t("updates.rollbackTitle"),
+    message: t("updates.rollbackPreparing"),
+    fraction: 0.05,
+  });
+  state.busy = true;
+  renderStatus();
+  try {
+    state.runtime = await call("rollback_dsh_preview");
+    setToast(t("updates.rollbackDone", { version: state.runtime.version || "" }));
+  } catch (error) {
+    const message = errorMessage(error);
+    renderUpdateProgress({
+      title: t("updates.rollbackFailed"),
+      message,
+      error: message,
+      done: true,
+    });
+    setToast(message, true);
+  } finally {
+    state.busy = false;
+    state.busyOperation = null;
+    await refreshStatus();
+    await refreshRuntime();
+    renderDshUpdate();
+    renderStatus();
+    await checkDshUpdate(false, false);
   }
 }
 
@@ -1131,6 +1205,13 @@ function bindEvents() {
   });
   elements.checkDshUpdateButton.addEventListener("click", () => checkDshUpdate(false, true));
   elements.installDshUpdateButton.addEventListener("click", () => installDshUpdate(false));
+  elements.rollbackDshPreviewButton.addEventListener("click", () => rollbackDshPreview());
+  elements.dshUpdateChannel.addEventListener("change", async () => {
+    localStorage.setItem(DSH_CHANNEL_STORAGE_KEY, currentDshChannel());
+    // The channel decides which npm dist-tags are read, so re-check right away
+    // instead of waiting for the next automatic check.
+    await checkDshUpdate(false, true);
+  });
   elements.autoCheckAppToggle.addEventListener("change", () => {
     localStorage.setItem("autoCheckForUpdates", String(elements.autoCheckAppToggle.checked));
     scheduleAutomaticUpdateChecks();
@@ -1217,9 +1298,16 @@ async function listenForOutput() {
     if (progress.message && state.busy) {
       elements.dshUpdateStatus.textContent = progress.message;
     }
-    if (state.updateKind === "dsh") {
+    if (state.updateKind === "dsh" || state.updateKind === "dsh-rollback") {
+      const rollingBack = state.updateKind === "dsh-rollback";
       renderUpdateProgress({
-        title: progress.error ? t("update.dsh.failed") : t("update.dsh.title"),
+        title: progress.error
+          ? rollingBack
+            ? t("updates.rollbackFailed")
+            : t("update.dsh.failed")
+          : rollingBack
+            ? t("updates.rollbackTitle")
+            : t("update.dsh.title"),
         message: progress.message,
         fraction: progress.fraction,
         done: progress.done === true,
@@ -1305,6 +1393,7 @@ async function initialize() {
   elements.autoCheckAppToggle.checked = localStorage.getItem("autoCheckForUpdates") !== "false";
   elements.autoCheckDshToggle.checked = localStorage.getItem("autoCheckHarnessUpdates") !== "false";
   elements.autoInstallDshToggle.checked = localStorage.getItem("autoInstallHarnessUpdates") !== "false";
+  elements.dshUpdateChannel.value = storedDshChannel();
   elements.autoCheckInterval.value = localStorage.getItem("autoCheckInterval") || "hourly";
   elements.memorySaverToggle.checked = state.memorySaver;
   elements.memorySaverUnfocusToggle.checked = state.memorySaverUnfocus;

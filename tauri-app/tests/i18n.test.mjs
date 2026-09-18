@@ -1,12 +1,15 @@
-// Verifies i18n consistency: every key referenced from main.js and index.html
-// exists in both the zh and en dictionaries, and both dictionaries match.
+// Verifies i18n consistency: every key referenced from main.js, dsh-channel.js
+// and index.html exists in both the zh and en dictionaries, and both
+// dictionaries match.
 import { readFileSync } from "node:fs";
 import { resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const i18nSource = readFileSync(resolve(root, "src/i18n.js"), "utf8");
-const mainSource = readFileSync(resolve(root, "src/main.js"), "utf8");
+const shellSources = ["src/main.js", "src/dsh-channel.js"].map((file) =>
+  readFileSync(resolve(root, file), "utf8"),
+);
 const htmlSource = readFileSync(resolve(root, "src/index.html"), "utf8");
 
 // Extract the zh/en message objects without executing DOM-dependent code.
@@ -32,7 +35,9 @@ function extractMessages() {
 const { zh, en } = extractMessages();
 
 const usedInJs = new Set();
-for (const m of mainSource.matchAll(/\bt\(\s*"([^"]+)"/g)) usedInJs.add(m[1]);
+for (const source of shellSources) {
+  for (const m of source.matchAll(/\bt\(\s*"([^"]+)"/g)) usedInJs.add(m[1]);
+}
 
 const usedInHtml = new Set();
 for (const attr of ["data-i18n", "data-i18n-title", "data-i18n-aria-label"]) {

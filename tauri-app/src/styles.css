@@ -659,6 +659,13 @@ button:disabled {
   white-space: nowrap;
 }
 
+/* The bundled dsh status is a full sentence ("running preview X; stable is
+   Y"), so it gets its own full-width line instead of being ellipsized into a
+   single narrow column. */
+.setting-info-grid .setting-info-wide {
+  grid-column: 1 / -1;
+}
+
 .setting-actions {
   display: flex;
   flex: 0 0 auto;

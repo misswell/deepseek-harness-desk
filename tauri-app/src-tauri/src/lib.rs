@@ -201,6 +201,16 @@ struct DshUpdateStatus {
     latest_version: Option<String>,
     available: bool,
     status: String,
+    /// Update channel the check ran on: `"stable"` (npm `latest`/`next`) or
+    /// `"preview"` (additionally `alpha`/`beta`).
+    channel: String,
+    /// True when the offered version is a preview build.
+    preview: bool,
+    /// Newest preview build published on npm, when it is newer than what is
+    /// installed. Lets the settings page point at a beta without installing it.
+    preview_version: Option<String>,
+    /// True when the active managed version is a preview build.
+    current_is_preview: bool,
 }
 
 #[derive(Serialize, Clone, Debug)]
@@ -249,6 +259,11 @@ struct NpmMetadata {
 struct NpmDistTags {
     latest: Option<String>,
     next: Option<String>,
+    /// Preview builds. The harness team publishes early builds under `alpha`
+    /// (and would use `beta` if it ever splits the stream); neither is ever
+    /// picked unless the user opts into the preview channel.
+    alpha: Option<String>,
+    beta: Option<String>,
 }
 
 #[derive(Serialize, Clone, Debug)]
@@ -350,18 +365,73 @@ fn is_newer_version(candidate: &str, current: &str) -> bool {
 /// while `latest` is still `0.1.0-rc.7`); reading only `latest` would miss a
 /// brand-new rc. This returns the newer of the two, or whichever is present.
 fn newest_published_version(latest: Option<&str>, next: Option<&str>) -> Option<String> {
-    match (latest, next) {
-        (Some(latest), Some(next)) => {
-            if is_newer_version(next, latest) {
-                Some(next.to_string())
-            } else {
-                Some(latest.to_string())
-            }
+    newest_of_published_versions(&[latest, next])
+}
+
+/// Return the newest non-empty version among the given npm dist-tag values.
+fn newest_of_published_versions(candidates: &[Option<&str>]) -> Option<String> {
+    let mut newest: Option<String> = None;
+    for candidate in candidates.iter().flatten() {
+        let candidate = candidate.trim();
+        if candidate.is_empty() {
+            continue;
         }
-        (Some(latest), None) => Some(latest.to_string()),
-        (None, Some(next)) => Some(next.to_string()),
-        (None, None) => None,
+        if newest
+            .as_deref()
+            .is_none_or(|current| is_newer_version(candidate, current))
+        {
+            newest = Some(candidate.to_string());
+        }
     }
+    newest
+}
+
+/// Which npm dist-tags the bundled dsh updater may install.
+///
+/// `Stable` follows the release candidates tagged `latest`/`next`, which is
+/// what the harness team ships as its normal release stream. `Preview`
+/// additionally considers `alpha`/`beta`, so early builds can be checked and
+/// installed on purpose instead of by accident.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum DshUpdateChannel {
+    Stable,
+    Preview,
+}
+
+impl DshUpdateChannel {
+    /// Parse the channel sent by the shell. Unknown or missing values fall back
+    /// to `Stable`: a malformed request must never opt the user into previews.
+    fn from_request(value: Option<&str>) -> Self {
+        match value.map(str::trim) {
+            Some(value)
+                if value.eq_ignore_ascii_case("preview")
+                    || value.eq_ignore_ascii_case("beta")
+                    || value.eq_ignore_ascii_case("alpha") =>
+            {
+                Self::Preview
+            }
+            _ => Self::Stable,
+        }
+    }
+
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::Stable => "stable",
+            Self::Preview => "preview",
+        }
+    }
+}
+
+/// True for managed version directories that only exist because the preview
+/// channel was used (`0.1.6-alpha.2`, `0.1.6-beta.1`, …). Release candidates
+/// (`0.1.5-rc.2`) belong to the stable channel. The prerelease label has to
+/// match exactly so a version such as `0.1.6-alphabet.1` is not mistaken for a
+/// preview build.
+fn is_preview_dsh_version(version: &str) -> bool {
+    let (_, prerelease) = version_parts(version);
+    prerelease
+        .iter()
+        .any(|part| matches!(part.to_ascii_lowercase().as_str(), "alpha" | "beta"))
 }
 
 fn is_safe_package_version(version: &str) -> bool {
@@ -1812,7 +1882,10 @@ async fn install_app_update_inner(
     result
 }
 
-async fn check_dsh_update_inner(app: &AppHandle) -> Result<DshUpdateStatus, String> {
+async fn check_dsh_update_inner(
+    app: &AppHandle,
+    channel: DshUpdateChannel,
+) -> Result<DshUpdateStatus, String> {
     let current_version = managed_dsh_version(Some(app));
     if current_version.is_none() {
         return Ok(DshUpdateStatus {
@@ -1820,6 +1893,10 @@ async fn check_dsh_update_inner(app: &AppHandle) -> Result<DshUpdateStatus, Stri
             current_version: None,
             latest_version: None,
             available: false,
+            channel: channel.as_str().to_string(),
+            preview: false,
+            preview_version: None,
+            current_is_preview: false,
             status: "尚未安装内置 dsh，完成一键安装后可检查更新。".to_string(),
         });
     }
@@ -1838,7 +1915,7 @@ async fn check_dsh_update_inner(app: &AppHandle) -> Result<DshUpdateStatus, Stri
         .json::<NpmMetadata>()
         .await
         .map_err(|error| format!("解析 dsh 更新信息失败：{error}"))?;
-    let latest = newest_published_version(
+    let stable = newest_published_version(
         metadata
             .dist_tags
             .latest
@@ -1849,20 +1926,59 @@ async fn check_dsh_update_inner(app: &AppHandle) -> Result<DshUpdateStatus, Stri
             .next
             .filter(|version| !version.is_empty())
             .as_deref(),
-    )
-    .ok_or("npm 未返回 dsh 的可用版本（latest/next）。")?;
+    );
+    // `alpha`/`beta` carry the early builds; they only ever win when the user
+    // asked for the preview channel.
+    let preview = newest_of_published_versions(&[
+        metadata
+            .dist_tags
+            .alpha
+            .filter(|version| !version.is_empty())
+            .as_deref(),
+        metadata
+            .dist_tags
+            .beta
+            .filter(|version| !version.is_empty())
+            .as_deref(),
+    ]);
+    let latest = newest_of_published_versions(&[
+        stable.as_deref(),
+        if channel == DshUpdateChannel::Preview {
+            preview.as_deref()
+        } else {
+            None
+        },
+    ])
+    .ok_or("npm 未返回 dsh 的可用版本（latest/next/alpha/beta）。")?;
     let current = current_version.unwrap_or_default();
     let available = is_newer_version(&latest, &current);
+    let current_is_preview = is_preview_dsh_version(&current);
+    let offered_is_preview = is_preview_dsh_version(&latest);
+    let preview_version = preview.filter(|version| is_newer_version(version, &current));
+    let status = if available {
+        if offered_is_preview {
+            format!("发现内置 dsh 预览版 {latest}")
+        } else {
+            format!("发现内置 dsh 新版本 {latest}")
+        }
+    } else if current_is_preview {
+        match stable.as_deref() {
+            Some(stable) => format!("当前运行预览版 {current}；稳定通道最新为 {stable}"),
+            None => format!("当前运行预览版 {current}"),
+        }
+    } else {
+        format!("内置 dsh 已是最新版本 {current}")
+    };
     Ok(DshUpdateStatus {
         managed: true,
-        current_version: Some(current.clone()),
-        latest_version: Some(latest.clone()),
+        current_version: Some(current),
+        latest_version: Some(latest),
         available,
-        status: if available {
-            format!("发现内置 dsh 新版本 {latest}")
-        } else {
-            format!("内置 dsh 已是最新版本 {current}")
-        },
+        channel: channel.as_str().to_string(),
+        preview: offered_is_preview,
+        preview_version,
+        current_is_preview,
+        status,
     })
 }
 
@@ -1948,6 +2064,113 @@ async fn install_dsh_update_inner(
     if was_running {
         start_harness_inner(app, state).await?;
     }
+    Ok(runtime_status_snapshot(app, state))
+}
+
+/// Drop the preview builds installed by the preview channel.
+///
+/// The launcher always activates the newest managed version, so a preview build
+/// stays active even after switching the update channel back to stable. Removing
+/// the preview directories (and refreshing the `dsh` wrapper) is what actually
+/// rolls the app back onto the newest stable build; nothing else is touched, and
+/// the removed builds can be reinstalled from npm at any time.
+async fn rollback_dsh_preview_inner(
+    app: &AppHandle,
+    state: &HarnessState,
+) -> Result<RuntimeStatus, String> {
+    if state.runtime_installing.swap(true, Ordering::AcqRel) {
+        return Err("运行时正在安装或更新，请稍后再试。".to_string());
+    }
+    let result = async {
+        let versions = managed_dsh_version_paths(Some(app));
+        let stable = versions
+            .iter()
+            .find(|(version, path)| {
+                !is_preview_dsh_version(version) && is_executable(&dsh_executable(path))
+            })
+            .map(|(version, _)| version.clone())
+            .ok_or("没有可用的稳定版内置 dsh，请先检查更新并安装稳定版。")?;
+        let dsh_roots = runtime_roots(Some(app))
+            .into_iter()
+            .map(|root| root.join("dsh"))
+            .collect::<Vec<_>>();
+        let preview_directories = versions
+            .into_iter()
+            .filter(|(version, _)| is_preview_dsh_version(version))
+            .filter(|(version, path)| {
+                // Only directories this app created inside a managed runtime are
+                // ever removed: the version must be a plain version string and
+                // the directory must sit directly under a runtime's `dsh` root.
+                is_safe_package_version(version)
+                    && dsh_roots
+                        .iter()
+                        .any(|root| path.parent() == Some(root.as_path()))
+            })
+            .collect::<Vec<_>>();
+        if preview_directories.is_empty() {
+            return Err("当前没有已安装的预览版内置 dsh。".to_string());
+        }
+
+        let was_running = snapshot(state).running;
+        emit_runtime_progress(
+            app,
+            state,
+            format!("正在停用预览版内置 dsh，回到稳定版 {stable}…"),
+            Some(0.35),
+            false,
+            None,
+        );
+        if was_running {
+            stop_harness_inner(app, state);
+        }
+        for (version, path) in &preview_directories {
+            fs::remove_dir_all(path)
+                .map_err(|error| format!("删除预览版内置 dsh {version} 失败：{error}"))?;
+        }
+        let removed = preview_directories
+            .iter()
+            .map(|(version, _)| version.as_str())
+            .collect::<Vec<_>>()
+            .join(", ");
+        emit_runtime_progress(
+            app,
+            state,
+            format!("已移除预览版 {removed}，正在回到稳定版…"),
+            Some(0.8),
+            false,
+            None,
+        );
+        Ok((was_running, removed))
+    }
+    .await;
+    state.runtime_installing.store(false, Ordering::Release);
+
+    let (was_running, removed) = match result {
+        Ok(value) => value,
+        Err(error) => {
+            emit_runtime_progress(
+                app,
+                state,
+                "回退稳定版失败。",
+                None,
+                true,
+                Some(error.clone()),
+            );
+            return Err(error);
+        }
+    };
+    link_dsh_to_path(app);
+    if was_running {
+        start_harness_inner(app, state).await?;
+    }
+    emit_runtime_progress(
+        app,
+        state,
+        format!("已移除预览版内置 dsh（{removed}），回到稳定版。"),
+        Some(1.0),
+        true,
+        None,
+    );
     Ok(runtime_status_snapshot(app, state))
 }
 
@@ -3019,8 +3242,19 @@ async fn install_app_update(
 }
 
 #[tauri::command]
-async fn check_dsh_update(app: AppHandle) -> Result<DshUpdateStatus, String> {
-    check_dsh_update_inner(&app).await
+async fn check_dsh_update(
+    app: AppHandle,
+    channel: Option<String>,
+) -> Result<DshUpdateStatus, String> {
+    check_dsh_update_inner(&app, DshUpdateChannel::from_request(channel.as_deref())).await
+}
+
+#[tauri::command]
+async fn rollback_dsh_preview(
+    app: AppHandle,
+    state: State<'_, HarnessState>,
+) -> Result<RuntimeStatus, String> {
+    rollback_dsh_preview_inner(&app, &state).await
 }
 
 #[tauri::command]
@@ -4199,6 +4433,7 @@ pub fn run() {
             install_app_update,
             check_dsh_update,
             install_dsh_update,
+            rollback_dsh_preview,
             open_release_page,
             open_releases_page,
             open_runtime_directory,
@@ -4451,6 +4686,59 @@ mod tests {
             Some("0.1.0-rc.8")
         );
         assert_eq!(newest_published_version(None, None), None);
+    }
+
+    #[test]
+    fn newest_of_published_versions_ignores_empty_and_missing_tags() {
+        assert_eq!(
+            newest_of_published_versions(&[
+                Some("0.1.5-rc.2"),
+                Some("  "),
+                None,
+                Some("0.1.6-alpha.2")
+            ])
+            .as_deref(),
+            Some("0.1.6-alpha.2")
+        );
+        assert_eq!(newest_of_published_versions(&[None, Some("")]), None);
+    }
+
+    #[test]
+    fn update_channel_defaults_to_stable() {
+        assert_eq!(
+            DshUpdateChannel::from_request(Some("preview")),
+            DshUpdateChannel::Preview
+        );
+        assert_eq!(
+            DshUpdateChannel::from_request(Some(" BETA ")),
+            DshUpdateChannel::Preview
+        );
+        assert_eq!(
+            DshUpdateChannel::from_request(Some("stable")),
+            DshUpdateChannel::Stable
+        );
+        // A missing or unexpected value must never opt into previews.
+        assert_eq!(
+            DshUpdateChannel::from_request(None),
+            DshUpdateChannel::Stable
+        );
+        assert_eq!(
+            DshUpdateChannel::from_request(Some("nightly")),
+            DshUpdateChannel::Stable
+        );
+        assert_eq!(DshUpdateChannel::Stable.as_str(), "stable");
+        assert_eq!(DshUpdateChannel::Preview.as_str(), "preview");
+    }
+
+    #[test]
+    fn preview_versions_are_recognized_by_prerelease_label() {
+        assert!(is_preview_dsh_version("0.1.6-alpha.2"));
+        assert!(is_preview_dsh_version("0.1.6-beta.1"));
+        assert!(is_preview_dsh_version("v0.1.6-Alpha.1"));
+        // Release candidates ship on the stable channel.
+        assert!(!is_preview_dsh_version("0.1.5-rc.2"));
+        assert!(!is_preview_dsh_version("0.1.5"));
+        assert!(!is_preview_dsh_version("0.1.6-alphabet.1"));
     }
 
     #[test]

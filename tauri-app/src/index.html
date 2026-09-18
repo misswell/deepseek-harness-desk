@@ -250,13 +250,24 @@
                     <div class="setting-info-grid">
                       <span><span data-i18n="updates.currentVersion">当前版本</span><strong id="dsh-current-version" data-i18n="common.notInstalled">未安装</strong></span>
                       <span><span data-i18n="updates.latestVersion">最新版本</span><strong id="dsh-latest-version" data-i18n="common.notChecked">未检查</strong></span>
-                      <span><span data-i18n="updates.status">状态</span><strong id="dsh-update-status" data-i18n="common.notChecked">未检查</strong></span>
+                      <span class="setting-info-wide"><span data-i18n="updates.status">状态</span><strong id="dsh-update-status" data-i18n="common.notChecked">未检查</strong></span>
                     </div>
                     <div class="setting-actions">
                       <button class="toolbar-button" id="check-dsh-update-button" data-i18n="updates.checkDsh">检查内置 dsh 更新…</button>
                       <button class="primary-button compact-button hidden" id="install-dsh-update-button" data-i18n="updates.updateDsh">更新 dsh</button>
+                      <button class="toolbar-button hidden" id="rollback-dsh-preview-button" data-i18n="updates.rollbackPreview">回退到稳定版</button>
                     </div>
                   </div>
+                  <label class="setting-row">
+                    <span>
+                      <strong data-i18n="updates.channel">内置 dsh 更新通道</strong>
+                      <small data-i18n="updates.channelDesc">稳定版跟随 npm 的 latest/next；预览版额外接收 alpha/beta 预览构建，可能不稳定。</small>
+                    </span>
+                    <select id="dsh-update-channel">
+                      <option value="stable" data-i18n="updates.channel.stable">稳定版</option>
+                      <option value="preview" data-i18n="updates.channel.preview">预览版（beta / alpha）</option>
+                    </select>
+                  </label>
                   <label class="setting-row">
                     <span><strong data-i18n="updates.autoCheckDsh">自动检查内置 dsh 更新</strong><small data-i18n="updates.autoCheckDshDesc">启动后和后台定期检查 npm 最新版本。</small></span>
                     <input type="checkbox" id="auto-check-dsh-toggle" />
@@ -266,6 +277,7 @@
                     <input type="checkbox" id="auto-install-dsh-toggle" />
                   </label>
                 </div>
+                <p class="setting-note hidden" id="dsh-preview-hint"></p>
                 <p class="setting-note" data-i18n="updates.note2">更新过程会保留当前版本；安装完成后自动切换到新版本。系统 PATH 中手动安装的 dsh 不会被修改。</p>
               </div>
             </section>
