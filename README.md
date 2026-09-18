@@ -2,7 +2,7 @@
 
 DeepSeek Harness Desk 当前正式版是基于 **Tauri v2** 构建的跨平台桌面客户端，不是 SwiftUI 原生应用。应用代码位于 [`tauri-app`](tauri-app)，使用 Rust、WebView 和系统原生能力，支持 macOS、Windows 与 Linux。
 
-当前版本：0.3.44。安装包请从 [GitHub Releases](https://github.com/misswell/deepseek-harness-desk/releases/latest) 下载。
+当前版本：0.3.45。安装包请从 [GitHub Releases](https://github.com/misswell/deepseek-harness-desk/releases/latest) 下载。
 官网：[harness.liuguofeng.com](https://harness.liuguofeng.com/)
 
 ## 开发
@@ -15,7 +15,7 @@ npm run tauri dev
 
 需要 Node.js 18+、Rust 和 Cargo。测试构建使用 `npm run build:debug`，发布构建使用 `npm run build`；每次构建前会自动把历史本地测试包移入系统废纸篓，再生成 macOS、Windows 和 Linux 对应的安装包/可执行产物，因此构建完成后只保留最新输出。当前 Tauri 版优先使用系统 `dsh`，也会兼容旧版 managed dsh；找不到时点击“安装并启动”会自动下载隔离的 Node.js 和 Harness 运行时，也可通过 `DSH_BIN` 指定已有路径。
 
-Tauri 版功能包括：启动、停止、重启 Harness；自动选择 `3080–3099` 端口；异步 HTTP 健康检查；stdout/stderr 日志；固定单窗口；透明自定义顶栏；菜单栏/系统托盘唤醒；Dock 图标开关；macOS、Windows、Linux 窗口控制。
+Tauri 版功能包括：启动、停止、重启 Harness；自动选择 `3080–3099` 端口；异步 HTTP 健康检查；stdout/stderr 日志；固定单窗口；透明自定义顶栏；菜单栏/系统托盘唤醒；Dock 图标开关与样式选择（蓝色 / 黑色 / 头像，选择会写入 App 包，退出 App 后依然生效）；macOS、Windows、Linux 窗口控制。
 
 为降低内存占用，应用提供多级内存释放策略（均在“设置 → 高级 → 内存与性能”中可开关）：关闭窗口到菜单栏/托盘时卸载 Harness 网页（释放 WebView 数百 MB 内存）；窗口失焦 20 秒后也自动卸载页面，回到窗口时重新加载；窗口可见但 Harness 持续空闲（约 10 分钟无事件、无交互）时自动重新加载页面，回收渲染进程长期运行累积的内存。同时为 Harness 后端限制 V8 堆上限，避免长时间运行的会话把内存撑到数 GB。这些操作都只释放渲染页面（WebView）的内存，Harness 后台服务与全部会话状态保持运行，重新加载后自动恢复。
 
