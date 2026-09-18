@@ -762,10 +762,11 @@ async function installDshUpdate(automatically = false) {
       preview: false,
       preview_version: null,
       current_is_preview: isPreviewDshVersion(installed),
-      // Installing an update always clears the pin (it means "move forward"),
-      // and the new version is the newest, so nothing else changes.
+      // Installing an update always clears the pin (it means "move forward").
+      // `stable_version` is left alone: it must keep naming npm's newest stable
+      // build, not the preview that was just installed, otherwise the rollback
+      // button would "roll back" to the preview itself.
       pinned_version: null,
-      stable_version: installed,
       status: t("update.dsh.done", { version: installed }),
     };
     setToast(automatically
