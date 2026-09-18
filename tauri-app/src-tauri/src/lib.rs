@@ -5082,6 +5082,32 @@ mod tests {
         );
     }
 
+    /// The version picker reads every published version, so the metadata
+    /// fixture keeps the (large) per-version manifests: parsing must ignore
+    /// them instead of failing on the unknown fields.
+    #[test]
+    fn npm_metadata_yields_tags_and_every_published_version() {
+        let raw = r#"{
+            "name": "@deepseek-ai/dsh",
+            "dist-tags": {"latest": "0.1.5-rc.2", "next": "0.1.5-rc.1", "alpha": "0.1.6-alpha.2"},
+            "versions": {
+                "0.1.5-rc.2": {"name": "@deepseek-ai/dsh", "version": "0.1.5-rc.2", "dist": {"tarball": "https://example.test/a.tgz"}},
+                "0.1.6-alpha.2": {"name": "@deepseek-ai/dsh", "version": "0.1.6-alpha.2"}
+            }
+        }"#;
+        let metadata: NpmMetadata = serde_json::from_str(raw).expect("npm metadata must parse");
+        let (stable, preview) = published_dsh_versions(&metadata);
+        assert_eq!(stable, Some("0.1.5-rc.2".to_string()));
+        assert_eq!(preview, Some("0.1.6-alpha.2".to_string()));
+        let mut versions = metadata
+            .versions
+            .expect("versions must be captured")
+            .into_keys()
+            .collect::<Vec<_>>();
+        versions.sort_by(|left, right| compare_versions(right, left));
+        assert_eq!(versions, vec!["0.1.6-alpha.2", "0.1.5-rc.2"]);
+    }
+
     #[test]
     fn published_versions_keep_the_two_streams_apart() {
         let metadata = NpmMetadata {
