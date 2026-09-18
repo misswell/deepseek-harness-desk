@@ -3771,47 +3771,161 @@ fn set_dock_visibility(app: AppHandle, visible: bool) -> Result<(), String> {
     Ok(())
 }
 
-#[cfg(target_os = "macos")]
-fn apply_macos_dock_icon(use_black_variant: bool) {
-    use objc2::{AnyThread, MainThreadMarker};
-    use objc2_app_kit::{NSApplication, NSImage};
-    use objc2_foundation::NSData;
+/// Dock icon styles the shell can pick. `Blue` is the icon that ships inside
+/// the app bundle, so it needs no custom Finder icon.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum DockIconVariant {
+    Blue,
+    Black,
+    Avatar,
+}
 
-    let Some(marker) = MainThreadMarker::new() else {
-        return;
-    };
-    let bytes: &'static [u8] = if use_black_variant {
-        include_bytes!("../../../Assets/DeepSeekHarnessIcon-Black-Prepared-1024.png")
-    } else {
-        include_bytes!("../../../Assets/DeepSeekHarnessIcon-Prepared-1024.png")
-    };
-    let data = NSData::with_bytes(bytes);
-    let Some(image) = NSImage::initWithData(NSImage::alloc(), &data) else {
-        return;
-    };
-    let application = NSApplication::sharedApplication(marker);
-    unsafe {
-        application.setApplicationIconImage(Some(&image));
+impl DockIconVariant {
+    fn parse(value: &str) -> Option<Self> {
+        match value {
+            "blue" => Some(Self::Blue),
+            "black" => Some(Self::Black),
+            "avatar" => Some(Self::Avatar),
+            _ => None,
+        }
+    }
+
+    /// The bundled app icon already is this variant.
+    #[cfg(target_os = "macos")]
+    fn is_default(self) -> bool {
+        matches!(self, Self::Blue)
+    }
+
+    #[cfg(target_os = "macos")]
+    fn png_bytes(self) -> &'static [u8] {
+        match self {
+            Self::Blue => include_bytes!("../../../Assets/DeepSeekHarnessIcon-Prepared-1024.png"),
+            Self::Black => {
+                include_bytes!("../../../Assets/DeepSeekHarnessIcon-Black-Prepared-1024.png")
+            }
+            Self::Avatar => {
+                include_bytes!("../../../Assets/DeepSeekHarnessIcon-Avatar-Prepared-1024.png")
+            }
+        }
     }
 }
 
-#[tauri::command]
-fn set_dock_icon_variant(app: AppHandle, variant: String) -> Result<(), String> {
-    let use_black_variant = match variant.as_str() {
-        "blue" => false,
-        "black" => true,
-        _ => return Err("不支持的 Dock 图标样式。".to_string()),
+/// Outcome of a Dock icon switch. `applied` reports the running Dock tile and
+/// `persisted` reports whether the icon also survives quitting the app.
+#[derive(Serialize)]
+struct DockIconOutcome {
+    applied: bool,
+    persisted: bool,
+}
+
+/// Runs `task` on the main thread and waits briefly for its result. The Dock
+/// tile and the bundle's Finder icon both have to be touched from there.
+#[cfg(target_os = "macos")]
+fn run_on_main_thread_sync<T: Send + 'static>(
+    app: &AppHandle,
+    task: impl FnOnce() -> T + Send + 'static,
+) -> Option<T> {
+    let (sender, receiver) = std::sync::mpsc::channel();
+    app.run_on_main_thread(move || {
+        let _ = sender.send(task());
+    })
+    .ok()?;
+    receiver.recv_timeout(Duration::from_secs(5)).ok()
+}
+
+#[cfg(target_os = "macos")]
+fn dock_icon_image(variant: DockIconVariant) -> Option<Retained<objc2_app_kit::NSImage>> {
+    use objc2::AnyThread;
+    use objc2_app_kit::NSImage;
+    use objc2_foundation::NSData;
+
+    let data = NSData::with_bytes(variant.png_bytes());
+    NSImage::initWithData(NSImage::alloc(), &data)
+}
+
+/// Writes (or clears) the app bundle's Finder custom icon.
+///
+/// macOS only reads the bundle icon while an app is *not* running, so
+/// `setApplicationIconImage` alone cannot survive a quit: the Dock, Finder and
+/// Launchpad would fall back to the bundled icon. Giving the bundle a custom
+/// icon keeps the chosen style after the app exits. Returns `false` when the
+/// bundle cannot be written to (for example when it lives on a read-only
+/// volume), in which case only the running Dock tile changes.
+#[cfg(target_os = "macos")]
+fn persist_macos_dock_icon(bundle: &Path, variant: DockIconVariant) -> bool {
+    use objc2_app_kit::{NSWorkspace, NSWorkspaceIconCreationOptions};
+
+    let workspace = NSWorkspace::sharedWorkspace();
+    let path = NSString::from_str(&bundle.to_string_lossy());
+    let has_custom_icon = bundle.join("Icon\r").exists();
+
+    if variant.is_default() {
+        if !has_custom_icon {
+            return true;
+        }
+        let cleared =
+            workspace.setIcon_forFile_options(None, &path, NSWorkspaceIconCreationOptions(0));
+        if cleared {
+            workspace.noteFileSystemChanged_(&path);
+        }
+        return cleared;
+    }
+
+    let Some(image) = dock_icon_image(variant) else {
+        return false;
     };
+    let written = workspace.setIcon_forFile_options(
+        Some(&image),
+        &path,
+        NSWorkspaceIconCreationOptions(0),
+    );
+    if written {
+        workspace.noteFileSystemChanged_(&path);
+    }
+    written
+}
+
+#[tauri::command]
+fn set_dock_icon_variant(app: AppHandle, variant: String) -> Result<DockIconOutcome, String> {
+    let variant =
+        DockIconVariant::parse(&variant).ok_or_else(|| "不支持的 Dock 图标样式。".to_string())?;
 
     #[cfg(target_os = "macos")]
-    app.run_on_main_thread(move || apply_macos_dock_icon(use_black_variant))
-        .map_err(|error| error.to_string())?;
+    {
+        let bundle = current_app_bundle();
+        return run_on_main_thread_sync(&app, move || {
+            use objc2::{AnyThread, MainThreadMarker};
+            use objc2_app_kit::NSApplication;
+
+            let mut applied = false;
+            if let Some(marker) = MainThreadMarker::new() {
+                if let Some(image) = dock_icon_image(variant) {
+                    let application = NSApplication::sharedApplication(marker);
+                    unsafe {
+                        application.setApplicationIconImage(Some(&image));
+                    }
+                    applied = true;
+                }
+            }
+            let persisted = bundle
+                .as_deref()
+                .is_some_and(|bundle| persist_macos_dock_icon(bundle, variant));
+            DockIconOutcome {
+                applied,
+                persisted,
+            }
+        })
+        .ok_or_else(|| "无法在主线程切换 Dock 图标。".to_string());
+    }
 
     #[cfg(not(target_os = "macos"))]
     {
-        let _ = (app, use_black_variant);
+        let _ = (app, variant);
+        Ok(DockIconOutcome {
+            applied: false,
+            persisted: false,
+        })
     }
-    Ok(())
 }
 
 #[cfg(target_os = "macos")]
