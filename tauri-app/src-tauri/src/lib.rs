@@ -3818,19 +3818,30 @@ struct DockIconOutcome {
     persisted: bool,
 }
 
-/// Runs `task` on the main thread and waits briefly for its result. The Dock
-/// tile and the bundle's Finder icon both have to be touched from there.
+/// Repaints the Dock tile of the running application.
+///
+/// Tauri runs synchronous commands on the main thread, so this is queued with
+/// `run_on_main_thread` instead of being called inline: the bundle icon write
+/// below runs on the command thread and must never block waiting for the main
+/// thread's event loop.
 #[cfg(target_os = "macos")]
-fn run_on_main_thread_sync<T: Send + 'static>(
-    app: &AppHandle,
-    task: impl FnOnce() -> T + Send + 'static,
-) -> Option<T> {
-    let (sender, receiver) = std::sync::mpsc::channel();
+fn apply_macos_dock_icon(app: &AppHandle, variant: DockIconVariant) -> Result<(), String> {
     app.run_on_main_thread(move || {
-        let _ = sender.send(task());
+        use objc2::MainThreadMarker;
+        use objc2_app_kit::NSApplication;
+
+        let Some(marker) = MainThreadMarker::new() else {
+            return;
+        };
+        let Some(image) = dock_icon_image(variant) else {
+            return;
+        };
+        let application = NSApplication::sharedApplication(marker);
+        unsafe {
+            application.setApplicationIconImage(Some(&image));
+        }
     })
-    .ok()?;
-    receiver.recv_timeout(Duration::from_secs(5)).ok()
+    .map_err(|error| error.to_string())
 }
 
 #[cfg(target_os = "macos")]
@@ -3892,30 +3903,17 @@ fn set_dock_icon_variant(app: AppHandle, variant: String) -> Result<DockIconOutc
 
     #[cfg(target_os = "macos")]
     {
-        let bundle = current_app_bundle();
-        return run_on_main_thread_sync(&app, move || {
-            use objc2::{AnyThread, MainThreadMarker};
-            use objc2_app_kit::NSApplication;
-
-            let mut applied = false;
-            if let Some(marker) = MainThreadMarker::new() {
-                if let Some(image) = dock_icon_image(variant) {
-                    let application = NSApplication::sharedApplication(marker);
-                    unsafe {
-                        application.setApplicationIconImage(Some(&image));
-                    }
-                    applied = true;
-                }
-            }
-            let persisted = bundle
-                .as_deref()
-                .is_some_and(|bundle| persist_macos_dock_icon(bundle, variant));
-            DockIconOutcome {
-                applied,
-                persisted,
-            }
+        let applied = dock_icon_image(variant).is_some();
+        apply_macos_dock_icon(&app, variant)?;
+        // The running tile is not what macOS shows once the app quits, so the
+        // chosen style also goes into the app bundle.
+        let persisted = current_app_bundle()
+            .as_deref()
+            .is_some_and(|bundle| persist_macos_dock_icon(bundle, variant));
+        Ok(DockIconOutcome {
+            applied,
+            persisted,
         })
-        .ok_or_else(|| "无法在主线程切换 Dock 图标。".to_string());
     }
 
     #[cfg(not(target_os = "macos"))]
@@ -4931,6 +4929,67 @@ mod tests {
             HiddenWindowAction::DestroyWebview
         );
         assert_eq!(hidden_window_action(false), HiddenWindowAction::Hide);
+    }
+
+    #[test]
+    fn dock_icon_variants_match_the_shell_values() {
+        assert_eq!(DockIconVariant::parse("blue"), Some(DockIconVariant::Blue));
+        assert_eq!(DockIconVariant::parse("black"), Some(DockIconVariant::Black));
+        assert_eq!(DockIconVariant::parse("avatar"), Some(DockIconVariant::Avatar));
+    }
+
+    #[test]
+    fn unknown_dock_icon_variants_are_rejected() {
+        assert_eq!(DockIconVariant::parse(""), None);
+        assert_eq!(DockIconVariant::parse("Blue"), None);
+        assert_eq!(DockIconVariant::parse("a-vatar"), None);
+    }
+
+    /// Only the bundled icon may clear the Finder custom icon: every other
+    /// style has to be written into the bundle to survive a quit.
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn only_the_blue_dock_icon_uses_the_bundled_artwork() {
+        assert!(DockIconVariant::Blue.is_default());
+        assert!(!DockIconVariant::Black.is_default());
+        assert!(!DockIconVariant::Avatar.is_default());
+    }
+
+    /// The bundle icon is what macOS shows once the app is not running, so both
+    /// writing and clearing it have to work on a real path.
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn dock_icon_persistence_writes_and_clears_the_bundle_icon() {
+        let bundle =
+            std::env::temp_dir().join(format!("dsh-dock-icon-test-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&bundle);
+        fs::create_dir_all(&bundle).expect("temp bundle directory");
+
+        assert!(
+            persist_macos_dock_icon(&bundle, DockIconVariant::Avatar),
+            "writing a custom icon must succeed on a writable path"
+        );
+        assert!(
+            bundle.join("Icon\r").exists(),
+            "the bundle must carry the custom icon"
+        );
+
+        // macOS falls back to the bundled artwork only once the custom icon is
+        // removed, which is why the blue style has to clear it.
+        assert!(
+            persist_macos_dock_icon(&bundle, DockIconVariant::Blue),
+            "clearing the custom icon must succeed"
+        );
+        assert!(
+            !bundle.join("Icon\r").exists(),
+            "the custom icon must be gone"
+        );
+        assert!(
+            persist_macos_dock_icon(&bundle, DockIconVariant::Blue),
+            "clearing an icon that is not set must stay a no-op success"
+        );
+
+        let _ = fs::remove_dir_all(&bundle);
     }
 
     #[test]

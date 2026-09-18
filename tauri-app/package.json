@@ -1,7 +1,7 @@
 {
   "name": "deepseek-harness-desk",
   "private": true,
-  "version": "0.3.44",
+  "version": "0.3.45",
   "type": "module",
   "engines": {
     "node": ">=18"
@@ -13,6 +13,8 @@
     "test:zoom": "node tests/zoom.test.js",
     "test:i18n": "node tests/i18n.test.mjs",
     "test:dsh-channel": "node tests/dsh-channel.test.mjs",
+    "test:dock-icon": "node tests/dock-icon.test.mjs",
+    "test:dock-icon-wiring": "node tests/dock-icon-wiring.test.mjs",
     "test:dsh-channel-wiring": "node tests/dsh-channel-wiring.test.mjs",
     "test:macos-process-label": "node tests/macos-process-label.test.mjs",
     "test:notification-prefs": "node tests/notification-prefs.test.mjs",

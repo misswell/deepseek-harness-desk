@@ -14,6 +14,13 @@ import {
 import { notificationPrefsPayload } from "./notification-prefs.js";
 import { shouldShowAppUpdateBanner } from "./update-banner.js";
 import {
+  DOCK_ICON_VARIANT_STORAGE_KEY,
+  dockIconPersistWarning,
+  dockIconToastKey,
+  normalizeDockIconVariant,
+  storedDockIconVariant,
+} from "./dock-icon.js";
+import {
   DSH_CHANNEL_STORAGE_KEY,
   dshPreviewHintText,
   dshPinText,
@@ -30,7 +37,6 @@ const invoke = tauri?.core?.invoke;
 const listen = tauri?.event?.listen;
 const currentWebview = tauri?.webviewWindow?.getCurrentWebviewWindow?.() || null;
 const ZOOM_STORAGE_KEY = "uiZoom";
-const DOCK_ICON_VARIANT_STORAGE_KEY = "dockIconVariant";
 const THEME_STORAGE_KEY = "windowTheme";
 const systemColorScheme = window.matchMedia?.("(prefers-color-scheme: dark)") || null;
 
@@ -1233,12 +1239,16 @@ async function toggleDockIcon() {
 }
 
 async function toggleDockIconVariant() {
-  const variant = elements.dockIconVariantSelect.value === "black" ? "black" : "blue";
-  const previousVariant = variant === "black" ? "blue" : "black";
+  const variant = normalizeDockIconVariant(elements.dockIconVariantSelect.value);
+  const previousVariant = storedDockIconVariant();
   localStorage.setItem(DOCK_ICON_VARIANT_STORAGE_KEY, variant);
   try {
-    await call("set_dock_icon_variant", { variant });
-    setToast(variant === "black" ? t("toast.dockIconBlack") : t("toast.dockIconBlue"));
+    const outcome = await call("set_dock_icon_variant", { variant });
+    const unpersisted = dockIconPersistWarning(outcome);
+    setToast(
+      unpersisted ? t("toast.dockIconNotPersisted") : t(dockIconToastKey(variant)),
+      unpersisted,
+    );
   } catch (error) {
     elements.dockIconVariantSelect.value = previousVariant;
     localStorage.setItem(DOCK_ICON_VARIANT_STORAGE_KEY, previousVariant);
@@ -1547,7 +1557,7 @@ async function initialize() {
   elements.launchAtLoginToggle.checked = localStorage.getItem("launchAtLogin") === "true";
   elements.restoreLastWindowToggle.checked = localStorage.getItem("restoreLastWindow") !== "false";
   elements.dockIconToggle.checked = localStorage.getItem("showDockIcon") !== "false";
-  const dockIconVariant = localStorage.getItem(DOCK_ICON_VARIANT_STORAGE_KEY) === "black" ? "black" : "blue";
+  const dockIconVariant = storedDockIconVariant();
   elements.dockIconVariantSelect.value = dockIconVariant;
   elements.autoCheckAppToggle.checked = localStorage.getItem("autoCheckForUpdates") !== "false";
   elements.autoCheckDshToggle.checked = localStorage.getItem("autoCheckHarnessUpdates") !== "false";
