@@ -211,6 +211,35 @@ struct DshUpdateStatus {
     preview_version: Option<String>,
     /// True when the active managed version is a preview build.
     current_is_preview: bool,
+    /// Version the launcher is pinned to, when the user chose one instead of
+    /// following the newest installed build.
+    pinned_version: Option<String>,
+    /// Newest release candidate on npm, independent of the channel. Lets the
+    /// settings page offer "回到稳定版" while running a preview build.
+    stable_version: Option<String>,
+}
+
+/// One selectable version in the settings page: every version published on npm
+/// plus any locally installed one, flagged so the shell can label it.
+#[derive(Serialize, Clone, Debug)]
+struct DshVersionOption {
+    version: String,
+    preview: bool,
+    installed: bool,
+    active: bool,
+}
+
+#[derive(Serialize, Clone, Debug)]
+struct DshVersionsStatus {
+    active_version: Option<String>,
+    pinned_version: Option<String>,
+    latest_stable: Option<String>,
+    latest_preview: Option<String>,
+    /// Newest first.
+    versions: Vec<DshVersionOption>,
+    /// False when npm was unreachable, in which case `versions` only lists the
+    /// locally installed builds.
+    npm_reachable: bool,
 }
 
 #[derive(Serialize, Clone, Debug)]
@@ -253,6 +282,8 @@ struct GithubAsset {
 struct NpmMetadata {
     #[serde(rename = "dist-tags")]
     dist_tags: NpmDistTags,
+    /// Every published version, used by the settings page to offer downgrades.
+    versions: Option<HashMap<String, NpmVersionEntry>>,
 }
 
 #[derive(Deserialize, Debug)]
@@ -265,6 +296,11 @@ struct NpmDistTags {
     alpha: Option<String>,
     beta: Option<String>,
 }
+
+/// Placeholder for one `versions` entry. Only the version keys matter here, so
+/// the (large) per-version manifests are parsed into nothing.
+#[derive(Deserialize, Debug)]
+struct NpmVersionEntry {}
 
 #[derive(Serialize, Clone, Debug)]
 struct RuntimeProgress {
@@ -510,12 +546,111 @@ fn managed_dsh_version_paths(app: Option<&AppHandle>) -> Vec<(String, PathBuf)> 
     versions
 }
 
+/// File inside `<runtime>/dsh/` that records the version the user pinned.
+/// Without it the launcher always runs the newest managed version, which makes
+/// a downgrade impossible once a newer build is on disk.
+const DSH_PIN_FILE: &str = ".active-version";
+
+/// Upper bound on the versions the settings page offers. The registry holds a
+/// couple of dozen builds; the cap only guards against a pathological list.
+const MAX_LISTED_DSH_VERSIONS: usize = 60;
+
+/// Read a pinned version out of a pin file's contents. Only a plain version
+/// string is accepted; anything else (a corrupt or handwritten file) is
+/// ignored so the launcher falls back to the newest installed version.
+fn pinned_version_from_contents(contents: &str) -> Option<String> {
+    let version = contents.trim();
+    // A real version always starts with a digit; that keeps a stray word (or a
+    // dist-tag name) in the file from being treated as an installed version.
+    let looks_like_version = version
+        .chars()
+        .next()
+        .is_some_and(|first| first.is_ascii_digit());
+    if looks_like_version && is_safe_package_version(version) {
+        Some(version.to_string())
+    } else {
+        None
+    }
+}
+
+/// The version pinned by the user, if any runtime root records one.
+fn pinned_dsh_version(app: Option<&AppHandle>) -> Option<String> {
+    for runtime_root in runtime_roots(app) {
+        let Ok(contents) = fs::read_to_string(runtime_root.join("dsh").join(DSH_PIN_FILE)) else {
+            continue;
+        };
+        if let Some(version) = pinned_version_from_contents(&contents) {
+            return Some(version);
+        }
+    }
+    None
+}
+
+/// Persist (or clear) the pinned version. `None` removes every pin file so the
+/// launcher goes back to following the newest installed version.
+fn write_dsh_pin(app: &AppHandle, version: Option<&str>) -> Result<(), String> {
+    let mut first_error = None;
+    for runtime_root in runtime_roots(Some(app)) {
+        let dsh_root = runtime_root.join("dsh");
+        let path = dsh_root.join(DSH_PIN_FILE);
+        let result = match version {
+            Some(version) => {
+                if !is_safe_package_version(version) {
+                    return Err("dsh 版本号无效。".to_string());
+                }
+                fs::create_dir_all(&dsh_root)
+                    .and_then(|()| fs::write(&path, format!("{version}\n")))
+            }
+            None => match fs::remove_file(&path) {
+                Ok(()) => Ok(()),
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+                Err(error) => Err(error),
+            },
+        };
+        if let Err(error) = result {
+            first_error.get_or_insert(format!("写入内置 dsh 版本固定信息失败：{error}"));
+        }
+    }
+    match first_error {
+        Some(error) => Err(error),
+        None => Ok(()),
+    }
+}
+
+/// Pick the version the launcher must use out of the installed ones.
+///
+/// `installed` is newest-first and flags which entries have a usable `dsh`
+/// binary. A pinned version wins as long as it is actually installed and
+/// usable; otherwise the newest usable one is used, so a stale pin can never
+/// leave the app without a runnable dsh.
+fn select_active_dsh_version(installed: &[(String, bool)], pinned: Option<&str>) -> Option<String> {
+    if let Some(pinned) = pinned {
+        if installed
+            .iter()
+            .any(|(version, usable)| version == pinned && *usable)
+        {
+            return Some(pinned.to_string());
+        }
+    }
+    installed
+        .iter()
+        .find(|(_, usable)| *usable)
+        .map(|(version, _)| version.clone())
+}
+
+/// Version and directory of the dsh the app should run right now.
+fn active_dsh_version_path(app: Option<&AppHandle>) -> Option<(String, PathBuf)> {
+    let versions = managed_dsh_version_paths(app);
+    let installed = versions
+        .iter()
+        .map(|(version, path)| (version.clone(), is_executable(&dsh_executable(path))))
+        .collect::<Vec<_>>();
+    let active = select_active_dsh_version(&installed, pinned_dsh_version(app).as_deref())?;
+    versions.into_iter().find(|(version, _)| version == &active)
+}
+
 fn managed_dsh_version(app: Option<&AppHandle>) -> Option<String> {
-    let executable = dsh_executable;
-    managed_dsh_version_paths(app)
-        .into_iter()
-        .find(|(_, path)| is_executable(&executable(path)))
-        .map(|(version, _)| version)
+    active_dsh_version_path(app).map(|(version, _)| version)
 }
 
 fn managed_node_root(app: Option<&AppHandle>) -> Option<PathBuf> {
@@ -564,10 +699,7 @@ fn link_dsh_to_path(app: &AppHandle) {
     {
         // Only create the wrapper when the active dsh is one we manage; a
         // user-provided dsh (DSH_BIN / system PATH) is already reachable.
-        let Some((_, dsh_root)) = managed_dsh_version_paths(Some(app))
-            .into_iter()
-            .find(|(_, path)| is_executable(&dsh_executable(path)))
-        else {
+        let Some((_, dsh_root)) = active_dsh_version_path(Some(app)) else {
             return;
         };
         let Some(node_root) = managed_node_root(Some(app)) else {
@@ -676,8 +808,17 @@ fn dsh_candidates(app: Option<&AppHandle>) -> Vec<PathBuf> {
     let names = vec!["dsh".to_string()];
 
     // Reuse both the runtime created by the old Swift client and the Tauri
-    // app-data runtime created by the first-run installer. Always prefer the
-    // newest managed package so an installed dsh update becomes active.
+    // app-data runtime created by the first-run installer. The version the user
+    // chose (pinned, else the newest managed one) comes first, and every other
+    // installed version stays as a fallback.
+    if let Some((_, version_dir)) = active_dsh_version_path(app) {
+        for name in &names {
+            push_unique(
+                &mut candidates,
+                version_dir.join("node_modules/.bin").join(name),
+            );
+        }
+    }
     for (_, version_dir) in managed_dsh_version_paths(app) {
         for name in &names {
             push_unique(
@@ -1882,24 +2023,9 @@ async fn install_app_update_inner(
     result
 }
 
-async fn check_dsh_update_inner(
-    app: &AppHandle,
-    channel: DshUpdateChannel,
-) -> Result<DshUpdateStatus, String> {
-    let current_version = managed_dsh_version(Some(app));
-    if current_version.is_none() {
-        return Ok(DshUpdateStatus {
-            managed: false,
-            current_version: None,
-            latest_version: None,
-            available: false,
-            channel: channel.as_str().to_string(),
-            preview: false,
-            preview_version: None,
-            current_is_preview: false,
-            status: "尚未安装内置 dsh，完成一键安装后可检查更新。".to_string(),
-        });
-    }
+/// Fetch `@deepseek-ai/dsh` metadata from npm. Shared by the update check and
+/// the version list so both see exactly the same tags and versions.
+async fn fetch_npm_dsh_metadata(app: &AppHandle) -> Result<NpmMetadata, String> {
     let user_agent = format!("DeepSeek Harness Desk/{APP_VERSION}");
     let client = outbound_http_client(Duration::from_secs(20), &user_agent, false)
         .map_err(|error| format!("创建 dsh 更新检查客户端失败：{error}"))?;
@@ -1911,36 +2037,51 @@ async fn check_dsh_update_inner(
     if !response.status().is_success() {
         return Err(format!("npm 返回 HTTP {}", response.status()));
     }
-    let metadata = response
+    let _ = app;
+    response
         .json::<NpmMetadata>()
         .await
-        .map_err(|error| format!("解析 dsh 更新信息失败：{error}"))?;
-    let stable = newest_published_version(
-        metadata
-            .dist_tags
-            .latest
-            .filter(|version| !version.is_empty())
-            .as_deref(),
-        metadata
-            .dist_tags
-            .next
-            .filter(|version| !version.is_empty())
-            .as_deref(),
-    );
+        .map_err(|error| format!("解析 dsh 更新信息失败：{error}"))
+}
+
+/// The two version streams npm publishes: the release candidates behind
+/// `latest`/`next`, and the early builds behind `alpha`/`beta`.
+fn published_dsh_versions(metadata: &NpmMetadata) -> (Option<String>, Option<String>) {
+    let tag = |value: &Option<String>| value.clone().filter(|version| !version.is_empty());
+    let latest = tag(&metadata.dist_tags.latest);
+    let next = tag(&metadata.dist_tags.next);
+    let alpha = tag(&metadata.dist_tags.alpha);
+    let beta = tag(&metadata.dist_tags.beta);
+    let stable = newest_published_version(latest.as_deref(), next.as_deref());
+    let preview = newest_of_published_versions(&[alpha.as_deref(), beta.as_deref()]);
+    (stable, preview)
+}
+
+async fn check_dsh_update_inner(
+    app: &AppHandle,
+    channel: DshUpdateChannel,
+) -> Result<DshUpdateStatus, String> {
+    let current_version = managed_dsh_version(Some(app));
+    let pinned_version = pinned_dsh_version(Some(app));
+    if current_version.is_none() {
+        return Ok(DshUpdateStatus {
+            managed: false,
+            current_version: None,
+            latest_version: None,
+            available: false,
+            channel: channel.as_str().to_string(),
+            preview: false,
+            preview_version: None,
+            current_is_preview: false,
+            pinned_version: None,
+            stable_version: None,
+            status: "尚未安装内置 dsh，完成一键安装后可检查更新。".to_string(),
+        });
+    }
+    let metadata = fetch_npm_dsh_metadata(app).await?;
     // `alpha`/`beta` carry the early builds; they only ever win when the user
     // asked for the preview channel.
-    let preview = newest_of_published_versions(&[
-        metadata
-            .dist_tags
-            .alpha
-            .filter(|version| !version.is_empty())
-            .as_deref(),
-        metadata
-            .dist_tags
-            .beta
-            .filter(|version| !version.is_empty())
-            .as_deref(),
-    ]);
+    let (stable, preview) = published_dsh_versions(&metadata);
     let latest = newest_of_published_versions(&[
         stable.as_deref(),
         if channel == DshUpdateChannel::Preview {
@@ -1955,7 +2096,13 @@ async fn check_dsh_update_inner(
     let current_is_preview = is_preview_dsh_version(&current);
     let offered_is_preview = is_preview_dsh_version(&latest);
     let preview_version = preview.filter(|version| is_newer_version(version, &current));
-    let status = if available {
+    let status = if let Some(pinned) = pinned_version.as_deref() {
+        if pinned == latest {
+            format!("已固定到内置 dsh {pinned}")
+        } else {
+            format!("已固定到内置 dsh {pinned}；当前通道最新为 {latest}")
+        }
+    } else if available {
         if offered_is_preview {
             format!("发现内置 dsh 预览版 {latest}")
         } else {
@@ -1978,14 +2125,22 @@ async fn check_dsh_update_inner(
         preview: offered_is_preview,
         preview_version,
         current_is_preview,
+        pinned_version,
+        stable_version: stable,
         status,
     })
 }
 
-async fn install_dsh_update_inner(
+/// Install one dsh version into `<runtime>/dsh/<version>` and make it active.
+///
+/// `pin` is what the launcher must use once the files are in place: `Some` pins
+/// the freshly installed version (used by the downgrade flow), `None` clears any
+/// pin so the newest installed build wins again (used by "更新 dsh").
+async fn install_dsh_version_inner(
     app: &AppHandle,
     state: &HarnessState,
     version: String,
+    pin: Option<String>,
 ) -> Result<RuntimeStatus, String> {
     if !is_safe_package_version(&version) {
         return Err("dsh 版本号无效。".to_string());
@@ -2039,7 +2194,16 @@ async fn install_dsh_update_inner(
         fs::rename(&dsh_staging, &dsh_root)
             .map_err(|error| format!("保存 dsh 更新失败：{error}"))?;
         let _ = fs::remove_dir_all(&staging);
-        emit_runtime_progress(app, state, "内置 dsh 更新完成。", Some(1.0), true, None);
+        // 版本目录就位后才写 pin：写失败也不会留下“指向不存在版本”的固定记录。
+        write_dsh_pin(app, pin.as_deref())?;
+        emit_runtime_progress(
+            app,
+            state,
+            format!("内置 dsh {version} 已就绪。"),
+            Some(1.0),
+            true,
+            None,
+        );
         Ok(())
     }
     .await;
@@ -2053,7 +2217,7 @@ async fn install_dsh_update_inner(
         emit_runtime_progress(
             app,
             state,
-            "内置 dsh 更新失败。",
+            "内置 dsh 安装失败。",
             None,
             true,
             Some(error.clone()),
@@ -2067,111 +2231,207 @@ async fn install_dsh_update_inner(
     Ok(runtime_status_snapshot(app, state))
 }
 
-/// Drop the preview builds installed by the preview channel.
+/// Make one installed dsh version active by pinning it.
 ///
-/// The launcher always activates the newest managed version, so a preview build
-/// stays active even after switching the update channel back to stable. Removing
-/// the preview directories (and refreshing the `dsh` wrapper) is what actually
-/// rolls the app back onto the newest stable build; nothing else is touched, and
-/// the removed builds can be reinstalled from npm at any time.
-async fn rollback_dsh_preview_inner(
+/// The launcher always activates the newest managed version, so a downgrade (or
+/// just leaving a preview build) needs an explicit record of the version the
+/// user chose. Pinning is reversible and non-destructive: the other installed
+/// builds stay on disk, and "跟随最新版" clears the pin again. A version that is
+/// not installed yet is fetched from npm first.
+async fn activate_dsh_version_inner(
     app: &AppHandle,
     state: &HarnessState,
+    version: String,
 ) -> Result<RuntimeStatus, String> {
+    if !is_safe_package_version(&version) {
+        return Err("dsh 版本号无效。".to_string());
+    }
+    let installed = managed_dsh_version_paths(Some(app))
+        .into_iter()
+        .any(|(candidate, path)| candidate == version && is_executable(&dsh_executable(&path)));
+    if !installed {
+        emit_runtime_progress(
+            app,
+            state,
+            format!("内置 dsh {version} 尚未安装，正在从 npm 下载…"),
+            Some(0.02),
+            false,
+            None,
+        );
+        return install_dsh_version_inner(app, state, version.clone(), Some(version)).await;
+    }
     if state.runtime_installing.swap(true, Ordering::AcqRel) {
         return Err("运行时正在安装或更新，请稍后再试。".to_string());
     }
-    let result = async {
-        let versions = managed_dsh_version_paths(Some(app));
-        let stable = versions
-            .iter()
-            .find(|(version, path)| {
-                !is_preview_dsh_version(version) && is_executable(&dsh_executable(path))
-            })
-            .map(|(version, _)| version.clone())
-            .ok_or("没有可用的稳定版内置 dsh，请先检查更新并安装稳定版。")?;
-        let dsh_roots = runtime_roots(Some(app))
-            .into_iter()
-            .map(|root| root.join("dsh"))
-            .collect::<Vec<_>>();
-        let preview_directories = versions
-            .into_iter()
-            .filter(|(version, _)| is_preview_dsh_version(version))
-            .filter(|(version, path)| {
-                // Only directories this app created inside a managed runtime are
-                // ever removed: the version must be a plain version string and
-                // the directory must sit directly under a runtime's `dsh` root.
-                is_safe_package_version(version)
-                    && dsh_roots
-                        .iter()
-                        .any(|root| path.parent() == Some(root.as_path()))
-            })
-            .collect::<Vec<_>>();
-        if preview_directories.is_empty() {
-            return Err("当前没有已安装的预览版内置 dsh。".to_string());
-        }
-
-        let was_running = snapshot(state).running;
+    let already_active = managed_dsh_version(Some(app)).as_deref() == Some(version.as_str());
+    let was_running = snapshot(state).running;
+    let result = (|| -> Result<(), String> {
         emit_runtime_progress(
             app,
             state,
-            format!("正在停用预览版内置 dsh，回到稳定版 {stable}…"),
-            Some(0.35),
+            format!("正在切换到内置 dsh {version}…"),
+            Some(0.3),
             false,
             None,
         );
-        if was_running {
+        write_dsh_pin(app, Some(&version))?;
+        if !already_active && was_running {
             stop_harness_inner(app, state);
         }
-        for (version, path) in &preview_directories {
-            fs::remove_dir_all(path)
-                .map_err(|error| format!("删除预览版内置 dsh {version} 失败：{error}"))?;
-        }
-        let removed = preview_directories
-            .iter()
-            .map(|(version, _)| version.as_str())
-            .collect::<Vec<_>>()
-            .join(", ");
+        Ok(())
+    })();
+    state.runtime_installing.store(false, Ordering::Release);
+    if let Err(error) = result {
         emit_runtime_progress(
             app,
             state,
-            format!("已移除预览版 {removed}，正在回到稳定版…"),
-            Some(0.8),
-            false,
+            "切换内置 dsh 版本失败。",
+            None,
+            true,
+            Some(error.clone()),
+        );
+        return Err(error);
+    }
+    // Wrapper 与运行中的 Harness 都要跟着 pin 走，终端里的 dsh 才和 App 一致。
+    link_dsh_to_path(app);
+    if already_active {
+        emit_runtime_progress(
+            app,
+            state,
+            format!("内置 dsh 已固定到 {version}。"),
+            Some(1.0),
+            true,
             None,
         );
-        Ok((was_running, removed))
+        return Ok(runtime_status_snapshot(app, state));
     }
-    .await;
-    state.runtime_installing.store(false, Ordering::Release);
-
-    let (was_running, removed) = match result {
-        Ok(value) => value,
-        Err(error) => {
-            emit_runtime_progress(
-                app,
-                state,
-                "回退稳定版失败。",
-                None,
-                true,
-                Some(error.clone()),
-            );
-            return Err(error);
-        }
-    };
-    link_dsh_to_path(app);
     if was_running {
         start_harness_inner(app, state).await?;
     }
     emit_runtime_progress(
         app,
         state,
-        format!("已移除预览版内置 dsh（{removed}），回到稳定版。"),
+        format!("内置 dsh 已切换到 {version}。"),
         Some(1.0),
         true,
         None,
     );
     Ok(runtime_status_snapshot(app, state))
+}
+
+/// Clear the pin so the newest installed dsh version is used again.
+async fn follow_latest_dsh_version_inner(
+    app: &AppHandle,
+    state: &HarnessState,
+) -> Result<RuntimeStatus, String> {
+    if state.runtime_installing.swap(true, Ordering::AcqRel) {
+        return Err("运行时正在安装或更新，请稍后再试。".to_string());
+    }
+    let before = managed_dsh_version(Some(app));
+    let was_running = snapshot(state).running;
+    let result = write_dsh_pin(app, None);
+    state.runtime_installing.store(false, Ordering::Release);
+    if let Err(error) = result {
+        emit_runtime_progress(
+            app,
+            state,
+            "取消固定版本失败。",
+            None,
+            true,
+            Some(error.clone()),
+        );
+        return Err(error);
+    }
+    let after = managed_dsh_version(Some(app));
+    link_dsh_to_path(app);
+    if before == after {
+        emit_runtime_progress(
+            app,
+            state,
+            format!(
+                "内置 dsh 已改为跟随最新版（{}）。",
+                after.unwrap_or_default()
+            ),
+            Some(1.0),
+            true,
+            None,
+        );
+        return Ok(runtime_status_snapshot(app, state));
+    }
+    emit_runtime_progress(
+        app,
+        state,
+        format!(
+            "正在切回最新的内置 dsh {}…",
+            after.clone().unwrap_or_default()
+        ),
+        Some(0.4),
+        false,
+        None,
+    );
+    if was_running {
+        stop_harness_inner(app, state);
+        start_harness_inner(app, state).await?;
+    }
+    emit_runtime_progress(
+        app,
+        state,
+        format!("内置 dsh 已跟随最新版（{}）。", after.unwrap_or_default()),
+        Some(1.0),
+        true,
+        None,
+    );
+    Ok(runtime_status_snapshot(app, state))
+}
+
+/// List every selectable dsh version: what npm publishes plus what is installed.
+async fn list_dsh_versions_inner(app: &AppHandle) -> Result<DshVersionsStatus, String> {
+    let installed = managed_dsh_version_paths(Some(app))
+        .into_iter()
+        .map(|(version, path)| (version, is_executable(&dsh_executable(&path))))
+        .collect::<Vec<_>>();
+    let active_version = managed_dsh_version(Some(app));
+    let pinned_version = pinned_dsh_version(Some(app));
+    let mut ordered = Vec::new();
+    let mut latest_stable = None;
+    let mut latest_preview = None;
+    let mut npm_reachable = false;
+    if let Ok(metadata) = fetch_npm_dsh_metadata(app).await {
+        npm_reachable = true;
+        let (stable, preview) = published_dsh_versions(&metadata);
+        latest_stable = stable;
+        latest_preview = preview;
+        if let Some(versions) = metadata.versions {
+            ordered.extend(versions.into_keys());
+            ordered.sort_by(|left, right| compare_versions(right, left));
+            ordered.truncate(MAX_LISTED_DSH_VERSIONS);
+        }
+    }
+    for (version, _) in &installed {
+        if !ordered.iter().any(|candidate| candidate == version) {
+            ordered.push(version.clone());
+        }
+    }
+    ordered.sort_by(|left, right| compare_versions(right, left));
+    let versions = ordered
+        .into_iter()
+        .map(|version| DshVersionOption {
+            preview: is_preview_dsh_version(&version),
+            installed: installed
+                .iter()
+                .any(|(candidate, usable)| candidate == &version && *usable),
+            active: active_version.as_deref() == Some(version.as_str()),
+            version,
+        })
+        .collect();
+    Ok(DshVersionsStatus {
+        active_version,
+        pinned_version,
+        latest_stable,
+        latest_preview,
+        versions,
+        npm_reachable,
+    })
 }
 
 /// Opens a web link with the system's default handler (browser or mail
@@ -3250,20 +3510,38 @@ async fn check_dsh_update(
 }
 
 #[tauri::command]
-async fn rollback_dsh_preview(
-    app: AppHandle,
-    state: State<'_, HarnessState>,
-) -> Result<RuntimeStatus, String> {
-    rollback_dsh_preview_inner(&app, &state).await
-}
-
-#[tauri::command]
 async fn install_dsh_update(
     app: AppHandle,
     state: State<'_, HarnessState>,
     version: String,
 ) -> Result<RuntimeStatus, String> {
-    install_dsh_update_inner(&app, &state, version).await
+    // "更新 dsh" always means moving forward, so any earlier pin is dropped and
+    // the freshly installed version wins.
+    install_dsh_version_inner(&app, &state, version, None).await
+}
+
+#[tauri::command]
+async fn list_dsh_versions(app: AppHandle) -> Result<DshVersionsStatus, String> {
+    list_dsh_versions_inner(&app).await
+}
+
+/// Switch to (and pin) one dsh version, installing it from npm when needed.
+#[tauri::command]
+async fn set_dsh_version(
+    app: AppHandle,
+    state: State<'_, HarnessState>,
+    version: String,
+) -> Result<RuntimeStatus, String> {
+    activate_dsh_version_inner(&app, &state, version).await
+}
+
+/// Drop the pin and let the newest installed dsh version take over again.
+#[tauri::command]
+async fn follow_latest_dsh_version(
+    app: AppHandle,
+    state: State<'_, HarnessState>,
+) -> Result<RuntimeStatus, String> {
+    follow_latest_dsh_version_inner(&app, &state).await
 }
 
 #[tauri::command]
@@ -4433,7 +4711,9 @@ pub fn run() {
             install_app_update,
             check_dsh_update,
             install_dsh_update,
-            rollback_dsh_preview,
+            list_dsh_versions,
+            set_dsh_version,
+            follow_latest_dsh_version,
             open_release_page,
             open_releases_page,
             open_runtime_directory,
@@ -4746,6 +5026,76 @@ mod tests {
         assert!(is_safe_package_version("0.1.0-rc.7"));
         assert!(!is_safe_package_version("../../tmp"));
         assert!(!is_safe_package_version("0.1.0 rc.7"));
+    }
+
+    #[test]
+    fn pinned_version_only_accepts_a_plain_version() {
+        assert_eq!(
+            pinned_version_from_contents("0.1.2-rc.1\n"),
+            Some("0.1.2-rc.1".to_string())
+        );
+        // A corrupt or handwritten pin file must never be trusted.
+        assert_eq!(pinned_version_from_contents(""), None);
+        assert_eq!(pinned_version_from_contents("../0.1.2"), None);
+        assert_eq!(pinned_version_from_contents(".active-version"), None);
+        assert_eq!(pinned_version_from_contents("latest"), None);
+    }
+
+    #[test]
+    fn active_version_prefers_the_pin_over_the_newest_build() {
+        let installed = vec![
+            ("0.1.6-alpha.2".to_string(), true),
+            ("0.1.5-rc.2".to_string(), true),
+            ("0.1.2-rc.1".to_string(), true),
+        ];
+        // A downgrade pins an older version and the launcher must honour it.
+        assert_eq!(
+            select_active_dsh_version(&installed, Some("0.1.2-rc.1")),
+            Some("0.1.2-rc.1".to_string())
+        );
+        assert_eq!(
+            select_active_dsh_version(&installed, None),
+            Some("0.1.6-alpha.2".to_string())
+        );
+    }
+
+    #[test]
+    fn active_version_ignores_unusable_pins_and_builds() {
+        let installed = vec![
+            ("0.1.6-alpha.2".to_string(), false),
+            ("0.1.5-rc.2".to_string(), true),
+        ];
+        // Pinned but not installed: fall back to the newest usable build.
+        assert_eq!(
+            select_active_dsh_version(&installed, Some("0.1.2-rc.1")),
+            Some("0.1.5-rc.2".to_string())
+        );
+        // Pinned but its dsh binary is missing: same fallback.
+        assert_eq!(
+            select_active_dsh_version(&installed, Some("0.1.6-alpha.2")),
+            Some("0.1.5-rc.2".to_string())
+        );
+        assert_eq!(select_active_dsh_version(&[], Some("0.1.5-rc.2")), None);
+        assert_eq!(
+            select_active_dsh_version(&[("0.1.5-rc.2".to_string(), false)], None),
+            None
+        );
+    }
+
+    #[test]
+    fn published_versions_keep_the_two_streams_apart() {
+        let metadata = NpmMetadata {
+            dist_tags: NpmDistTags {
+                latest: Some("0.1.5-rc.2".to_string()),
+                next: Some("0.1.5-rc.1".to_string()),
+                alpha: Some("0.1.6-alpha.2".to_string()),
+                beta: None,
+            },
+            versions: None,
+        };
+        let (stable, preview) = published_dsh_versions(&metadata);
+        assert_eq!(stable, Some("0.1.5-rc.2".to_string()));
+        assert_eq!(preview, Some("0.1.6-alpha.2".to_string()));
     }
 
     #[test]

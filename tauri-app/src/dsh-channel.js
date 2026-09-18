@@ -66,6 +66,18 @@ export function dshUpdateStatusText(update, t) {
   if (!update || update.managed !== true) return t("updates.dsh.notManaged");
   const channel = normalizeDshChannel(update.channel);
   const current = update.current_version || "—";
+  // A pinned version explains the current version better than "an update is
+  // available": the user deliberately chose it, and the newest build keeps
+  // being offered until they go back to following it.
+  if (update.pinned_version) {
+    const latest = update.latest_version || "—";
+    return update.pinned_version === latest
+      ? t("updates.dsh.pinned", { version: update.pinned_version })
+      : t("updates.dsh.pinnedWithLatest", {
+          version: update.pinned_version,
+          latest,
+        });
+  }
   if (update.available === true) {
     const vars = { version: update.latest_version || "" };
     return update.preview === true
@@ -94,4 +106,43 @@ export function dshPreviewHintText(update, t) {
   if (update.current_is_preview === true) return null;
   if (!update.preview_version) return null;
   return t("updates.dsh.previewAvailable", { version: update.preview_version });
+}
+
+/**
+ * Label for one entry of the version picker. Installed versions say so; a
+ * version that still has to be downloaded is marked with the npm download, so
+ * picking an older build never looks like an instant switch.
+ */
+export function dshVersionLabel(option, t) {
+  const markers = [];
+  if (option.preview) markers.push(t("updates.dsh.versionPreview"));
+  if (option.active) {
+    markers.push(t("updates.dsh.versionActive"));
+  } else if (option.installed) {
+    markers.push(t("updates.dsh.versionInstalled"));
+  } else {
+    markers.push(t("updates.dsh.versionDownload"));
+  }
+  return `${option.version} · ${markers.join(" · ")}`;
+}
+
+/** One-line summary of what the launcher will use, shown next to the picker. */
+export function dshPinText(status, t) {
+  if (!status) return "";
+  const base = status.pinned_version
+    ? t("updates.dsh.pinnedHint", { version: status.pinned_version })
+    : t("updates.dsh.followingHint", { version: status.active_version || "—" });
+  // The picker still works offline (installed versions only), so say so instead
+  // of silently offering a shorter list.
+  return status.npm_reachable === false
+    ? `${base} ${t("updates.dsh.npmOffline")}`
+    : base;
+}
+
+/**
+ * Automatic install must never fight an explicit version choice: while a
+ * version is pinned the shell only reports what is available.
+ */
+export function shouldAutoInstallDshUpdate(update) {
+  return update?.available === true && !update.pinned_version;
 }

@@ -1,7 +1,8 @@
-// Guards the frontend <-> backend contract of the bundled dsh update channel:
-// the shell must send a channel with every check, offer a rollback, and the
-// Rust side must accept/register both commands. These assertions cross a
-// language boundary that neither unit suite can cover on its own.
+// Guards the frontend <-> backend contract of the bundled dsh update channel
+// and version picker: the shell must send a channel with every check, offer a
+// rollback and a version switch, and the Rust side must accept/register every
+// command. These assertions cross a language boundary that neither unit suite
+// can cover on its own.
 import assert from "assert";
 import { readFileSync } from "node:fs";
 import { resolve, dirname } from "node:path";
@@ -25,7 +26,18 @@ assert.ok(
   htmlSource.includes('id="dsh-preview-hint"'),
   "the updates page must have a slot for the preview-available hint",
 );
-console.log("✓ updates page exposes channel, rollback and hint controls");
+for (const id of [
+  "dsh-version-select",
+  "apply-dsh-version-button",
+  "follow-latest-dsh-button",
+  "dsh-version-pin",
+]) {
+  assert.ok(
+    htmlSource.includes(`id="${id}"`),
+    `the updates page must expose the dsh version picker (#${id})`,
+  );
+}
+console.log("✓ updates page exposes channel, rollback, hint and version controls");
 
 // --- shell sends the channel and can roll back -----------------------------
 assert.match(
@@ -33,10 +45,36 @@ assert.match(
   /call\("check_dsh_update",\s*\{\s*channel:\s*currentDshChannel\(\)\s*\}\)/,
   "every dsh check must carry the selected channel",
 );
+// The rollback button is a version switch to the newest stable build; the
+// backend no longer deletes preview directories.
 assert.match(
   mainSource,
-  /call\("rollback_dsh_preview"\)/,
-  "the rollback button must call rollback_dsh_preview",
+  /const version = state\.dshUpdate\?\.stable_version;/,
+  "the rollback must target the stable version reported by the backend",
+);
+assert.ok(
+  !mainSource.includes('call("rollback_dsh_preview")'),
+  "the removed rollback_dsh_preview command must not be called anymore",
+);
+assert.match(
+  mainSource,
+  /call\("set_dsh_version", \{ version \}\)/,
+  "the picker must call set_dsh_version",
+);
+assert.match(
+  mainSource,
+  /call\("follow_latest_dsh_version"\)/,
+  "following the newest build must call follow_latest_dsh_version",
+);
+assert.match(
+  mainSource,
+  /call\("list_dsh_versions"\)/,
+  "the picker must load its options from list_dsh_versions",
+);
+assert.match(
+  mainSource,
+  /shouldAutoInstallDshUpdate\(state\.dshUpdate\)/,
+  "automatic installs must be skipped while a version is pinned",
 );
 assert.match(
   mainSource,
@@ -48,7 +86,7 @@ assert.match(
   /elements\.dshUpdateChannel\.value = storedDshChannel\(\)/,
   "the stored channel must be restored into the selector",
 );
-console.log("✓ shell sends the channel and persists the preference");
+console.log("✓ shell sends the channel, persists it and drives the version picker");
 
 // --- backend accepts the channel and registers both commands ---------------
 assert.match(
@@ -66,17 +104,41 @@ assert.match(
   /DshUpdateChannel::from_request\(channel\.as_deref\(\)\)/,
   "check_dsh_update must parse the requested channel",
 );
+for (const expected of [
+  /async fn list_dsh_versions\(app: AppHandle\)/,
+  /async fn set_dsh_version\(/,
+  /async fn follow_latest_dsh_version\(/,
+]) {
+  assert.match(rustSource, expected, `the backend must define ${expected}`);
+}
+assert.ok(
+  !rustSource.includes("async fn rollback_dsh_preview("),
+  "rollback_dsh_preview must be gone (the pin replaces it)",
+);
+// The launcher must resolve the pinned version instead of always taking the
+// newest managed directory, otherwise a downgrade could not work.
 assert.match(
   rustSource,
-  /async fn rollback_dsh_preview\(/,
-  "rollback_dsh_preview must exist",
+  /fn select_active_dsh_version\(/,
+  "the launcher must resolve the active version through the pin",
 );
-for (const command of ["check_dsh_update", "install_dsh_update", "rollback_dsh_preview"]) {
+assert.match(
+  rustSource,
+  /fn active_dsh_version_path\(app: Option<&AppHandle>\)/,
+  "candidates and the PATH wrapper must use the active version",
+);
+for (const command of [
+  "check_dsh_update",
+  "install_dsh_update",
+  "list_dsh_versions",
+  "set_dsh_version",
+  "follow_latest_dsh_version",
+]) {
   assert.ok(
     rustSource.includes(`            ${command},\n`),
     `${command} must be registered in the invoke handler`,
   );
 }
-console.log("✓ backend accepts the channel and registers the rollback command");
+console.log("✓ backend accepts the channel and registers the version commands");
 
 console.log("dsh-channel wiring: all checks passed");

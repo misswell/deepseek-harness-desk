@@ -268,6 +268,17 @@
                       <option value="preview" data-i18n="updates.channel.preview">预览版（beta / alpha）</option>
                     </select>
                   </label>
+                  <div class="setting-row stacked">
+                    <span>
+                      <strong data-i18n="updates.dshVersion">内置 dsh 版本</strong>
+                      <small id="dsh-version-pin">—</small>
+                    </span>
+                    <div class="setting-actions">
+                      <select id="dsh-version-select" data-i18n-aria-label="updates.dshVersion"></select>
+                      <button class="toolbar-button" id="apply-dsh-version-button" data-i18n="updates.dshApplyVersion">切换到此版本</button>
+                      <button class="toolbar-button" id="follow-latest-dsh-button" data-i18n="updates.dshFollowLatest">跟随最新版</button>
+                    </div>
+                  </div>
                   <label class="setting-row">
                     <span><strong data-i18n="updates.autoCheckDsh">自动检查内置 dsh 更新</strong><small data-i18n="updates.autoCheckDshDesc">启动后和后台定期检查 npm 最新版本。</small></span>
                     <input type="checkbox" id="auto-check-dsh-toggle" />
@@ -279,6 +290,7 @@
                 </div>
                 <p class="setting-note hidden" id="dsh-preview-hint"></p>
                 <p class="setting-note" data-i18n="updates.note2">更新过程会保留当前版本；安装完成后自动切换到新版本。系统 PATH 中手动安装的 dsh 不会被修改。</p>
+                <p class="setting-note" data-i18n="updates.note3">可在「内置 dsh 版本」里切换到任意已安装版本，或从 npm 安装更早的版本降到该版本；固定版本期间不会自动安装新版本。</p>
               </div>
             </section>
 
