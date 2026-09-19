@@ -3790,6 +3790,16 @@ impl DockIconVariant {
         }
     }
 
+    /// The id this style is known by in the shell and in the persisted record.
+    #[cfg(target_os = "macos")]
+    fn name(self) -> &'static str {
+        match self {
+            Self::Blue => "blue",
+            Self::Black => "black",
+            Self::Avatar => "avatar",
+        }
+    }
+
     /// The bundled app icon already is this variant.
     #[cfg(target_os = "macos")]
     fn is_default(self) -> bool {
@@ -3854,46 +3864,132 @@ fn dock_icon_image(variant: DockIconVariant) -> Option<Retained<objc2_app_kit::N
     NSImage::initWithData(NSImage::alloc(), &data)
 }
 
+/// Which style the app last wrote into which bundle, and from which build.
+///
+/// A bundle icon is not self-describing: macOS stores pixels and nothing else,
+/// so a launch cannot tell the style the user picked from one left behind by an
+/// older build. This record is what makes that call. It lives in the app's own
+/// data directory because a bundle in `/Applications` cannot be written to by
+/// the app at all — macOS there rejects even creating a single file inside the
+/// package — so no note in the bundle itself can serve as the record.
+#[cfg(target_os = "macos")]
+#[derive(Serialize, Deserialize)]
+struct DockIconRecord {
+    bundle: PathBuf,
+    variant: String,
+    version: String,
+}
+
+#[cfg(target_os = "macos")]
+fn dock_icon_record_path(app: &AppHandle) -> Option<PathBuf> {
+    app.path()
+        .app_data_dir()
+        .ok()
+        .map(|directory| directory.join("dock-icon.json"))
+}
+
+#[cfg(target_os = "macos")]
+fn read_dock_icon_record(path: &Path) -> Option<DockIconRecord> {
+    serde_json::from_slice(&fs::read(path).ok()?).ok()
+}
+
+/// Best effort: a record that never got written only costs one redundant bundle
+/// rewrite on the next launch, never a wrong icon.
+#[cfg(target_os = "macos")]
+fn save_dock_icon_record(path: &Path, record: &DockIconRecord) {
+    let Ok(bytes) = serde_json::to_vec(record) else {
+        return;
+    };
+    if let Some(directory) = path.parent() {
+        if fs::create_dir_all(directory).is_err() {
+            return;
+        }
+    }
+    let _ = fs::write(path, bytes);
+}
+
+/// Whether the app bundle currently carries a Finder custom icon, which is what
+/// macOS shows for an application that is not running.
+///
+/// The icon pixels live in the resource fork and the file's own data stays
+/// empty, so an `Icon\r` that exists is not yet an icon — only carrying icon data
+/// is, and that is the difference between skipping a rewrite and needing one.
+#[cfg(target_os = "macos")]
+fn bundle_custom_icon_present(bundle: &Path) -> bool {
+    let icon = bundle.join("Icon\r");
+    match fs::metadata(icon.join("..namedfork").join("rsrc")) {
+        Ok(fork) => fork.len() > 0,
+        Err(_) => false,
+    }
+}
+
+/// Whether the bundle already shows exactly what `variant` asks for, so the
+/// rewrite — and the Dock restart that has to follow it — can be skipped.
+#[cfg(target_os = "macos")]
+fn dock_icon_already_applied(
+    bundle: &Path,
+    variant: DockIconVariant,
+    record: Option<&DockIconRecord>,
+) -> bool {
+    let present = bundle_custom_icon_present(bundle);
+    if variant.is_default() {
+        return !present;
+    }
+    present
+        && record.is_some_and(|record| {
+            record.bundle == bundle
+                && record.version == APP_VERSION
+                && DockIconVariant::parse(&record.variant) == Some(variant)
+        })
+}
+
 /// Writes (or clears) the app bundle's Finder custom icon.
 ///
 /// macOS only reads the bundle icon while an app is *not* running, so
 /// `setApplicationIconImage` alone cannot survive a quit: the Dock, Finder and
-/// Launchpad would fall back to the bundled icon. Giving the bundle a custom
-/// icon keeps the chosen style after the app exits. Returns `false` when the
-/// bundle cannot be written to (for example when it lives on a read-only
-/// volume), in which case only the running Dock tile changes.
+/// Launchpad would fall back to the bundled icon. The write goes through
+/// `NSWorkspace`, whose icon services perform it on our behalf — that reaches a
+/// bundle in `/Applications` too, where the app could not write a file itself.
+/// Returns `false` only when the system refused, in which case just the running
+/// Dock tile changes.
 #[cfg(target_os = "macos")]
 fn persist_macos_dock_icon(bundle: &Path, variant: DockIconVariant) -> bool {
     use objc2_app_kit::{NSWorkspace, NSWorkspaceIconCreationOptions};
 
     let workspace = NSWorkspace::sharedWorkspace();
     let path = NSString::from_str(&bundle.to_string_lossy());
-    let has_custom_icon = bundle.join("Icon\r").exists();
 
-    if variant.is_default() {
-        if !has_custom_icon {
+    let written = if variant.is_default() {
+        if !bundle_custom_icon_present(bundle) {
             return true;
         }
-        let cleared =
-            workspace.setIcon_forFile_options(None, &path, NSWorkspaceIconCreationOptions(0));
-        if cleared {
-            workspace.noteFileSystemChanged_(&path);
-        }
-        return cleared;
-    }
-
-    let Some(image) = dock_icon_image(variant) else {
-        return false;
+        workspace.setIcon_forFile_options(None, &path, NSWorkspaceIconCreationOptions(0))
+    } else {
+        let Some(image) = dock_icon_image(variant) else {
+            return false;
+        };
+        workspace.setIcon_forFile_options(
+            Some(&image),
+            &path,
+            NSWorkspaceIconCreationOptions(0),
+        )
     };
-    let written = workspace.setIcon_forFile_options(
-        Some(&image),
-        &path,
-        NSWorkspaceIconCreationOptions(0),
-    );
     if written {
         workspace.noteFileSystemChanged_(&path);
     }
     written
+}
+
+/// Restarts the Dock so it rebuilds its cached tile icons from disk.
+///
+/// The Dock keeps its own copy of a pinned app's icon and only re-reads the
+/// bundle when the Dock process itself restarts. Finder and LaunchServices pick
+/// up a rewritten bundle icon at once, but without this the pinned tile kept
+/// showing the previous artwork after the app quit. Best effort: the icon on
+/// disk is correct either way and simply shows up at the next Dock restart.
+#[cfg(target_os = "macos")]
+fn restart_macos_dock() {
+    let _ = Command::new("/usr/bin/killall").arg("Dock").status();
 }
 
 #[tauri::command]
@@ -3906,10 +4002,34 @@ fn set_dock_icon_variant(app: AppHandle, variant: String) -> Result<DockIconOutc
         let applied = dock_icon_image(variant).is_some();
         apply_macos_dock_icon(&app, variant)?;
         // The running tile is not what macOS shows once the app quits, so the
-        // chosen style also goes into the app bundle.
-        let persisted = current_app_bundle()
-            .as_deref()
-            .is_some_and(|bundle| persist_macos_dock_icon(bundle, variant));
+        // style also goes into the app bundle, and the Dock has to be restarted
+        // for its cached tile to follow. The record keeps the boot-time re-apply
+        // from restarting the Dock on every launch.
+        let record_path = dock_icon_record_path(&app);
+        let record = record_path.as_deref().and_then(read_dock_icon_record);
+        let persisted = match current_app_bundle().as_deref() {
+            None => false,
+            Some(bundle) => {
+                if dock_icon_already_applied(bundle, variant, record.as_ref()) {
+                    true
+                } else if !persist_macos_dock_icon(bundle, variant) {
+                    false
+                } else {
+                    if let Some(path) = record_path.as_deref() {
+                        save_dock_icon_record(
+                            path,
+                            &DockIconRecord {
+                                bundle: bundle.to_path_buf(),
+                                variant: variant.name().to_string(),
+                                version: APP_VERSION.to_string(),
+                            },
+                        );
+                    }
+                    restart_macos_dock();
+                    true
+                }
+            }
+        };
         Ok(DockIconOutcome {
             applied,
             persisted,
@@ -4955,22 +5075,34 @@ mod tests {
         assert!(!DockIconVariant::Avatar.is_default());
     }
 
+    /// A throwaway directory shaped like an app bundle for the Dock icon tests.
+    /// Each test gets its own name because they all share one process id.
+    #[cfg(target_os = "macos")]
+    fn temp_dock_icon_bundle(name: &str) -> PathBuf {
+        let bundle = std::env::temp_dir().join(format!(
+            "dsh-dock-icon-{name}-{}/MyApp.app",
+            std::process::id()
+        ));
+        let _ = fs::remove_dir_all(&bundle);
+        fs::create_dir_all(&bundle).expect("temp bundle directory");
+        bundle
+    }
+
     /// The bundle icon is what macOS shows once the app is not running, so both
-    /// writing and clearing it have to work on a real path.
+    /// writing and clearing it have to work on a real path — and the app must be
+    /// able to tell the two states apart afterwards.
     #[cfg(target_os = "macos")]
     #[test]
     fn dock_icon_persistence_writes_and_clears_the_bundle_icon() {
-        let bundle =
-            std::env::temp_dir().join(format!("dsh-dock-icon-test-{}", std::process::id()));
-        let _ = fs::remove_dir_all(&bundle);
-        fs::create_dir_all(&bundle).expect("temp bundle directory");
+        let bundle = temp_dock_icon_bundle("write");
+        assert!(!bundle_custom_icon_present(&bundle));
 
         assert!(
             persist_macos_dock_icon(&bundle, DockIconVariant::Avatar),
             "writing a custom icon must succeed on a writable path"
         );
         assert!(
-            bundle.join("Icon\r").exists(),
+            bundle_custom_icon_present(&bundle),
             "the bundle must carry the custom icon"
         );
 
@@ -4981,12 +5113,124 @@ mod tests {
             "clearing the custom icon must succeed"
         );
         assert!(
-            !bundle.join("Icon\r").exists(),
+            !bundle_custom_icon_present(&bundle),
             "the custom icon must be gone"
         );
         assert!(
             persist_macos_dock_icon(&bundle, DockIconVariant::Blue),
             "clearing an icon that is not set must stay a no-op success"
+        );
+
+        let _ = fs::remove_dir_all(&bundle);
+    }
+
+    /// The icon pixels live in the resource fork, so an `Icon\r` that carries
+    /// none is not an icon: the bundled artwork is still what the user sees, and
+    /// treating the file as one would skip a rewrite that is actually needed.
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn only_icon_data_counts_as_a_custom_bundle_icon() {
+        let bundle = temp_dock_icon_bundle("icon-data");
+        let icon = bundle.join("Icon\r");
+
+        fs::write(&icon, b"").expect("icon file");
+        assert!(
+            !bundle_custom_icon_present(&bundle),
+            "an icon file without icon data must not count"
+        );
+
+        fs::write(icon.join("..namedfork").join("rsrc"), b"icon-bytes").expect("resource fork");
+        assert!(
+            bundle_custom_icon_present(&bundle),
+            "icon data must be found in the resource fork"
+        );
+
+        let _ = fs::remove_dir_all(&bundle);
+    }
+
+    /// Skipping the rewrite is what keeps the Dock from being restarted on every
+    /// launch, so it may only fire for the style this build wrote into this
+    /// bundle: a hand-set icon, another style, another build or another bundle
+    /// all have to trigger a rewrite.
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn dock_icon_already_applied_only_skips_a_matching_bundle() {
+        let bundle = temp_dock_icon_bundle("skip");
+        let blue = DockIconVariant::Blue;
+        let avatar = DockIconVariant::Avatar;
+        let record = |variant: &str, version: &str, bundle: &Path| DockIconRecord {
+            bundle: bundle.to_path_buf(),
+            variant: variant.to_string(),
+            version: version.to_string(),
+        };
+
+        assert!(dock_icon_already_applied(&bundle, blue, None));
+        assert!(!dock_icon_already_applied(&bundle, avatar, None));
+
+        let icon = bundle.join("Icon\r");
+        fs::write(&icon, b"").expect("icon file");
+        assert!(
+            dock_icon_already_applied(&bundle, blue, None),
+            "an empty icon file still shows the bundled artwork"
+        );
+        assert!(!dock_icon_already_applied(&bundle, avatar, None));
+
+        fs::write(icon.join("..namedfork").join("rsrc"), b"icon-bytes").expect("resource fork");
+        let other_style = record("black", APP_VERSION, &bundle);
+        let older_build = record("avatar", "0.0.0", &bundle);
+        let other_bundle = record("avatar", APP_VERSION, &bundle.join("elsewhere"));
+        let matching = record("avatar", APP_VERSION, &bundle);
+        assert!(
+            !dock_icon_already_applied(&bundle, blue, None),
+            "a custom icon must be cleared before the bundled artwork returns"
+        );
+        assert!(
+            !dock_icon_already_applied(&bundle, avatar, None),
+            "an icon nobody recorded must be rewritten"
+        );
+        assert!(
+            !dock_icon_already_applied(&bundle, avatar, Some(&other_style)),
+            "the record must name the style in play"
+        );
+        assert!(
+            !dock_icon_already_applied(&bundle, avatar, Some(&older_build)),
+            "a rewrite is due when the artwork may have changed"
+        );
+        assert!(
+            !dock_icon_already_applied(&bundle, avatar, Some(&other_bundle)),
+            "the record must describe this very bundle"
+        );
+        assert!(dock_icon_already_applied(&bundle, avatar, Some(&matching)));
+
+        let _ = fs::remove_dir_all(&bundle);
+    }
+
+    /// The record is the only thing that can live outside the bundle, so it has
+    /// to survive a round trip; anything unreadable falls back to rewriting.
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn dock_icon_record_round_trips_and_tolerates_a_missing_one() {
+        let bundle = temp_dock_icon_bundle("record");
+        let path = bundle.join("state").join("dock-icon.json");
+        assert!(read_dock_icon_record(&path).is_none());
+
+        save_dock_icon_record(
+            &path,
+            &DockIconRecord {
+                bundle: bundle.clone(),
+                variant: DockIconVariant::Avatar.name().to_string(),
+                version: APP_VERSION.to_string(),
+            },
+        );
+        let read = read_dock_icon_record(&path).expect("the record must be readable");
+        assert_eq!(read.variant, "avatar");
+        assert_eq!(read.version, APP_VERSION);
+        assert_eq!(read.bundle, bundle);
+
+        fs::write(&path, b"not json").expect("state file");
+        assert!(
+            read_dock_icon_record(&path).is_none(),
+            "a broken record must not be trusted"
         );
 
         let _ = fs::remove_dir_all(&bundle);

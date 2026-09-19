@@ -103,8 +103,46 @@ assert.match(
 );
 assert.match(
   rustSource,
-  /bundle\.join\("Icon\\r"\)\.exists\(\)/,
-  "clearing the bundled icon must be skippable when nothing is set",
+  /fn bundle_custom_icon_present\(/,
+  "the app must read back whether the bundle really carries the icon",
+);
+assert.match(
+  rustSource,
+  /bundle\.join\("Icon\\r"\)/,
+  "the Finder custom icon of the bundle is what has to be inspected",
+);
+assert.match(
+  rustSource,
+  /\.\.namedfork"\)\.join\("rsrc"\)/,
+  "icon data lives in the resource fork, so an empty marker file must not count",
+);
+// The Dock caches the icon of a pinned app and only re-reads the bundle when the
+// Dock process restarts, so a rewrite has to be followed by one.
+assert.match(
+  rustSource,
+  /fn restart_macos_dock\(\)[\s\S]{0,200}killall[\s\S]{0,60}"Dock"/,
+  "a rewritten bundle icon must be followed by a Dock restart",
+);
+assert.match(
+  rustSource,
+  /fn dock_icon_already_applied\(/,
+  "an already matching bundle must be left alone so the Dock is not restarted every launch",
+);
+// macOS rejects the app writing even one file inside its own bundle in
+// /Applications, so the note about what was written cannot live in the bundle.
+assert.ok(
+  !/fs::write\(bundle\.join\("Icon\\r"\)/.test(rustSource),
+  "the record must not be stored inside the app bundle",
+);
+assert.match(
+  rustSource,
+  /fn dock_icon_record_path\([\s\S]{0,200}app_data_dir\(\)[\s\S]{0,120}dock-icon\.json/,
+  "the applied style must be recorded in the app's own data directory",
+);
+assert.match(
+  rustSource,
+  /save_dock_icon_record\([\s\S]{0,400}restart_macos_dock\(\)/,
+  "a successful rewrite must record what it applied",
 );
 assert.match(
   rustSource,
