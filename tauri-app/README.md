@@ -1,6 +1,6 @@
 # DeepSeek Harness Desk（Tauri）
 
-这是 DeepSeek Harness Desk 0.3.45 的跨平台 Tauri v2 客户端。它使用一个固定的 `main` 窗口承载 Harness Web UI，窗口顶栏由 Tauri 原生拖动区域处理，并通过菜单栏/系统托盘唤醒隐藏窗口。
+这是 DeepSeek Harness Desk 0.3.46 的跨平台 Tauri v2 客户端。它使用一个固定的 `main` 窗口承载 Harness Web UI，窗口顶栏由 Tauri 原生拖动区域处理，并通过菜单栏/系统托盘唤醒隐藏窗口。
 
 ## 开发
 
@@ -23,7 +23,7 @@ npm run build
 
 图标由仓库中的 `Assets/DeepSeekHarnessIcon-Prepared-1024.png` 生成，macOS、Windows 和 Linux 包使用同一套品牌资源。macOS 发布时分别构建 Apple Silicon（arm64）和 Intel（x86_64）安装包。
 
-macOS 可在“设置 → 通用 → Dock 图标样式”中选择蓝色、黑色或头像图标。只改运行中的 Dock tile 不够——macOS 在 App 退出后会回退到 App 包内的图标，所以选择会同时通过 `NSWorkspace` 写进 App 包的自定义图标；位置不可写时界面会提示该选择只在本次运行内有效。自定义图标资源由 `scripts/make_prepared_dock_icon.swift` 按 846/1024 安全区与 0.22 圆角生成。
+macOS 可在“设置 → 通用 → Dock 图标样式”中选择蓝色、黑色或头像图标。只改运行中的 Dock tile 不够——macOS 在 App 退出后会回退到 App 包内的图标，而 Dock 对固定图标另有缓存、只有自身重启才会重读 App 包，所以选择会先通过 `NSWorkspace` 写进 App 包的自定义图标，再重启一次 Dock；系统拒绝写入时界面会提示该选择只在本次运行内有效。已应用的样式与版本记录在 `~/Library/Application Support/com.deepseek.harnessdesk/dock-icon.json`：App 包在 `/Applications` 下对应用本身完全不可写（连新建文件都会被拒绝），所以这个标记不能放在包内。启动时据此判断图标是否已经就位，避免每次启动都重启 Dock。自定义图标资源由 `scripts/make_prepared_dock_icon.swift` 按 846/1024 安全区与 0.22 圆角生成。
 
 主窗口支持快捷键缩放：macOS 使用 `⌘ +` / `⌘ -` / `⌘ 0`，Windows 和 Linux 使用 `Ctrl +` / `Ctrl -` / `Ctrl 0`，缩放范围为 75%–175%，设置会自动保存。
 
