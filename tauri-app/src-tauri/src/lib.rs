@@ -11,7 +11,8 @@ use std::sync::atomic::{AtomicBool, AtomicI64, AtomicU16, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
-use futures_util::StreamExt;
+use futures_util::{SinkExt, StreamExt};
+#[cfg(not(target_os = "macos"))]
 use tauri_plugin_notification::NotificationExt;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream};
@@ -3105,13 +3106,31 @@ const MAX_SEEN_INTERACTIONS: usize = 256;
 fn spawn_task_watcher(app: AppHandle, state: HarnessState) {
     tauri::async_runtime::spawn(async move {
         let mut retry_delay = Duration::from_millis(1500);
+        // Dedup keys and per-session running state live outside the reconnect
+        // loop: dsh replays still-pending interaction requests to every new
+        // client, and a session observed running before a reconnect must still
+        // fire "completed" when it goes idle afterwards.
+        let mut seen_interactions = VecDeque::new();
+        let mut running_sessions = HashMap::new();
         loop {
             let port = state.port.load(Ordering::Relaxed);
             if port == 0 {
+                // The backend is gone. Session state observed on the previous
+                // process says nothing about the next one, and keeping it
+                // would turn the first replay after a restart into a bogus
+                // "task completed" for work the user restarted themselves.
+                running_sessions.clear();
                 tokio::time::sleep(Duration::from_secs(1)).await;
                 continue;
             }
-            let outcome = watch_harness_events(&app, &state, port).await;
+            let outcome = watch_harness_events(
+                &app,
+                &state,
+                port,
+                &mut seen_interactions,
+                &mut running_sessions,
+            )
+            .await;
             // A dead or incompatible event stream must not turn into a tight
             // reconnect loop against the Harness backend.
             retry_delay = match outcome {
@@ -3148,13 +3167,16 @@ async fn connect_harness_ws(
 /// Keep the Harness event stream(s) open for as long as they last. Returns
 /// when the stream closes or fails; the caller reconnects after a pause.
 ///
-/// dsh 0.1.2+ serves a single authenticated mux endpoint; older releases
-/// expose the unauthenticated `events.mux` + `events.host` pair, which stays
-/// supported here as a fallback.
+/// dsh 0.1.2+ serves a single authenticated mux endpoint whose event data only
+/// flows after the shell opens the forwarded-event logical stream; older
+/// releases expose the unauthenticated `events.mux` + `events.host` pair,
+/// which stays supported here as a fallback.
 async fn watch_harness_events(
     app: &AppHandle,
     state: &HarnessState,
     port: u16,
+    seen_interactions: &mut VecDeque<String>,
+    running_sessions: &mut HashMap<String, bool>,
 ) -> Result<(), String> {
     let cookie = state
         .auth_cookie
@@ -3162,29 +3184,59 @@ async fn watch_harness_events(
         .ok()
         .and_then(|cookie| cookie.clone());
     let base = format!("ws://127.0.0.1:{port}");
-    let mut seen_interactions = VecDeque::new();
 
     if let Ok(mut mux) =
         connect_harness_ws(&format!("{base}/api/remote.mux"), cookie.as_deref()).await
     {
+        // The mux is a passive multiplexer: without opening the `$events`
+        // logical stream it stays silent forever, which is exactly why the
+        // notifications went dark on dsh 0.1.2+.
+        mux.send(tokio_tungstenite::tungstenite::Message::text(
+            events_stream_open_frame(),
+        ))
+        .await
+        .map_err(|error| error.to_string())?;
+        // A mux that refuses the forwarded-event stream before delivering a
+        // single item is a generation this adapter does not speak; fall
+        // through to the legacy endpoints instead of reconnecting forever.
+        let mut stream_delivered = false;
+        let mut stream_refused = false;
         while let Some(frame) = mux.next().await {
             match frame {
                 Ok(message) => {
                     touch_harness_activity(state);
-                    if let Ok(text) = message.to_text() {
-                        handle_mux_frame(app, state, text, &mut seen_interactions);
+                    let Ok(text) = message.to_text() else {
+                        continue;
+                    };
+                    match classify_mux_message(text) {
+                        HarnessInbound::Notice(notice) => {
+                            stream_delivered = true;
+                            apply_harness_notice(
+                                app,
+                                state,
+                                notice,
+                                seen_interactions,
+                                running_sessions,
+                            );
+                        }
+                        HarnessInbound::StreamFailed => {
+                            stream_refused = true;
+                            break;
+                        }
+                        HarnessInbound::Ignore => {}
                     }
                 }
                 Err(error) => return Err(error.to_string()),
             }
         }
-        return Ok(());
+        if !stream_refused || stream_delivered {
+            return Ok(());
+        }
     }
 
     let mut mux = connect_harness_ws(&format!("{base}/api/events.mux"), cookie.as_deref()).await?;
     let mut host =
         connect_harness_ws(&format!("{base}/api/events.host"), cookie.as_deref()).await?;
-    let mut running_sessions = HashMap::new();
     loop {
         tokio::select! {
             frame = mux.next() => {
@@ -3192,7 +3244,7 @@ async fn watch_harness_events(
                     Some(Ok(message)) => {
                         touch_harness_activity(state);
                         if let Ok(text) = message.to_text() {
-                            handle_mux_frame(app, state, text, &mut seen_interactions);
+                            apply_legacy_mux_frame(app, state, text, seen_interactions);
                         }
                     }
                     Some(Err(error)) => return Err(error.to_string()),
@@ -3204,7 +3256,7 @@ async fn watch_harness_events(
                     Some(Ok(message)) => {
                         touch_harness_activity(state);
                         if let Ok(text) = message.to_text() {
-                            handle_host_frame(app, state, text, &mut running_sessions);
+                            apply_legacy_host_frame(app, state, text, running_sessions);
                         }
                     }
                     Some(Err(error)) => return Err(error.to_string()),
@@ -3215,83 +3267,274 @@ async fn watch_harness_events(
     }
 }
 
-fn handle_mux_frame(
+/// The stream id the shell uses for the forwarded-event logical stream.
+const EVENTS_STREAM_ID: &str = "desk-events";
+
+/// The `open` frame that subscribes to dsh 0.1.2+ forwarded events on the
+/// Remote mux. The gateway validates the endpoint name and the exact
+/// `{args:{}}` payload, so both are fixed by the stream protocol.
+fn events_stream_open_frame() -> String {
+    serde_json::json!({
+        "type": "open",
+        "streamId": EVENTS_STREAM_ID,
+        "endpoint": "$events",
+        "payload": { "args": {} }
+    })
+    .to_string()
+}
+
+/// The shell's semantic view of Harness activity. Every dsh generation
+/// encodes the same facts with different wire shapes and event names; the
+/// adapters translate into these variants so dedup, preferences, focus
+/// checks, and notification text stay independent of the wire protocol.
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum HarnessNotice {
+    /// A question or approval needs the user before the session can proceed.
+    InteractionRequested {
+        key: String,
+        kind: NoticeKind,
+        detail: Option<String>,
+    },
+    /// A session switched between running and idle.
+    SessionRunningChanged { session_id: String, running: bool },
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum NoticeKind {
+    Question,
+    Approval,
+}
+
+/// Route one semantic notice through dedup, running-state tracking, and the
+/// user's notification preferences.
+fn apply_harness_notice(
+    app: &AppHandle,
+    state: &HarnessState,
+    notice: HarnessNotice,
+    seen_interactions: &mut VecDeque<String>,
+    running_sessions: &mut HashMap<String, bool>,
+) {
+    match notice {
+        HarnessNotice::InteractionRequested {
+            key,
+            kind,
+            detail,
+        } => {
+            if !is_new_interaction(seen_interactions, &key) {
+                return;
+            }
+            on_needs_interaction(app, state, kind, detail.as_deref());
+        }
+        HarnessNotice::SessionRunningChanged {
+            session_id,
+            running,
+        } => {
+            let previous = running_sessions.insert(session_id.clone(), running);
+            if previous == Some(true) && !running {
+                on_task_completed(app, state, &session_id);
+            }
+        }
+    }
+}
+
+/// What one raw remote.mux message means to the shell.
+#[derive(Debug, PartialEq, Eq)]
+enum HarnessInbound {
+    Notice(HarnessNotice),
+    /// The event logical stream ended or errored.
+    StreamFailed,
+    /// Heartbeats, stream bookkeeping, and events the shell does not use.
+    /// Newer dsh releases may forward additional events; ignoring unknown
+    /// names keeps the shell forward compatible.
+    Ignore,
+}
+
+/// Classify one raw remote.mux WebSocket message without side effects. Each
+/// mux message wraps one chunk of a logical stream: `{type:'item', streamId,
+/// value}` for data, plus `end`/`error` bookkeeping.
+fn classify_mux_message(text: &str) -> HarnessInbound {
+    let Ok(envelope) = serde_json::from_str::<serde_json::Value>(text) else {
+        return HarnessInbound::Ignore;
+    };
+    match envelope.get("type").and_then(|value| value.as_str()) {
+        Some("item") => classify_forwarded_value(envelope.get("value").unwrap_or(&serde_json::Value::Null)),
+        // The events logical stream is the only one the shell opens; when it
+        // ends or errors there is nothing left to observe on this socket.
+        Some("end") | Some("error") => HarnessInbound::StreamFailed,
+        // `ready` (stream provenance) and anything new are bookkeeping.
+        _ => HarnessInbound::Ignore,
+    }
+}
+
+/// Classify one forwarded-event stream item. The gateway delivers broadcast
+/// events as `{type:'emit', event, args:[...]}` and interaction requests as
+/// `{type:'waterfall', event, eventId, request}`.
+fn classify_forwarded_value(value: &serde_json::Value) -> HarnessInbound {
+    let Some(event) = value.get("event").and_then(|value| value.as_str()) else {
+        // `ready` and `cancel` frames carry no `event` name.
+        return HarnessInbound::Ignore;
+    };
+    match forwarded_event_kind(event) {
+        Some(ForwardedEventKind::Question) => {
+            let request = value.get("request").unwrap_or(&serde_json::Value::Null);
+            let event_id = value.get("eventId").and_then(|value| value.as_str()).unwrap_or("");
+            let detail = first_question_text(request);
+            HarnessInbound::Notice(HarnessNotice::InteractionRequested {
+                key: interaction_key(request, event_id),
+                kind: NoticeKind::Question,
+                detail,
+            })
+        }
+        Some(ForwardedEventKind::Approval) => {
+            let request = value.get("request").unwrap_or(&serde_json::Value::Null);
+            let event_id = value.get("eventId").and_then(|value| value.as_str()).unwrap_or("");
+            HarnessInbound::Notice(HarnessNotice::InteractionRequested {
+                key: interaction_key(request, event_id),
+                kind: NoticeKind::Approval,
+                detail: approval_detail(request),
+            })
+        }
+        Some(ForwardedEventKind::SessionStatus) => {
+            // `api-session/status` emits `[sessionId, running]`.
+            let args = value.get("args").and_then(|value| value.as_array());
+            let session_id = args
+                .and_then(|items| items.first())
+                .and_then(|value| value.as_str());
+            let running = args
+                .and_then(|items| items.get(1))
+                .and_then(|value| value.as_bool());
+            match (session_id, running) {
+                (Some(session_id), Some(running)) if !session_id.is_empty() => {
+                    HarnessInbound::Notice(HarnessNotice::SessionRunningChanged {
+                        session_id: session_id.to_string(),
+                        running,
+                    })
+                }
+                _ => HarnessInbound::Ignore,
+            }
+        }
+        None => HarnessInbound::Ignore,
+    }
+}
+
+/// Forwarded events the shell reacts to, matched tolerantly across the names
+/// each dsh generation has used for the same fact. The current allowlist is
+/// dsh 0.1.2–0.1.5's `dsh-api-remotes` forwarding table.
+enum ForwardedEventKind {
+    Question,
+    Approval,
+    SessionStatus,
+}
+
+fn forwarded_event_kind(event: &str) -> Option<ForwardedEventKind> {
+    match event {
+        "user-questions/request" | "question/requested" => Some(ForwardedEventKind::Question),
+        "approval/request" | "approval/requested" => Some(ForwardedEventKind::Approval),
+        "api-session/status" | "host/session-status" => Some(ForwardedEventKind::SessionStatus),
+        _ => None,
+    }
+}
+
+fn first_question_text(request: &serde_json::Value) -> Option<String> {
+    request
+        .get("questions")
+        .and_then(|value| value.as_array())
+        .and_then(|items| items.first())
+        .and_then(|item| item.get("question"))
+        .and_then(|value| value.as_str())
+        .map(str::to_string)
+        .filter(|text| !text.is_empty())
+}
+
+fn approval_detail(request: &serde_json::Value) -> Option<String> {
+    request
+        .get("toolName")
+        .and_then(|value| value.as_str())
+        .map(str::to_string)
+        .filter(|text| !text.is_empty())
+}
+
+/// Apply one raw legacy `events.mux` envelope (`{rpcId, payload:{type,...}}`).
+fn apply_legacy_mux_frame(
     app: &AppHandle,
     state: &HarnessState,
     text: &str,
     seen_interactions: &mut VecDeque<String>,
 ) {
-    let Ok(envelope) = serde_json::from_str::<serde_json::Value>(text) else {
+    let Some(HarnessNotice::InteractionRequested { key, kind, detail }) =
+        classify_legacy_mux_frame(text)
+    else {
         return;
     };
-    let Some(payload) = envelope.get("payload") else {
+    if !is_new_interaction(seen_interactions, &key) {
         return;
-    };
-    let Some(event_type) = payload.get("type").and_then(|value| value.as_str()) else {
-        return;
-    };
+    }
+    on_needs_interaction(app, state, kind, detail.as_deref());
+}
+
+/// Classify one raw legacy `events.mux` envelope without side effects.
+fn classify_legacy_mux_frame(text: &str) -> Option<HarnessNotice> {
+    let envelope = serde_json::from_str::<serde_json::Value>(text).ok()?;
+    let payload = envelope.get("payload")?;
+    let event_type = payload.get("type").and_then(|value| value.as_str())?;
+    let rpc_id = envelope
+        .get("rpcId")
+        .and_then(|value| value.as_str())
+        .unwrap_or("");
     match event_type {
-        "question/requested" => {
-            let body = payload
-                .get("questions")
-                .and_then(|value| value.as_array())
-                .and_then(|items| items.first())
-                .and_then(|item| item.get("question"))
-                .and_then(|value| value.as_str())
-                .unwrap_or_default()
-                .to_string();
-            let rpc_id = envelope
-                .get("rpcId")
-                .and_then(|value| value.as_str())
-                .unwrap_or("");
-            let key = interaction_key(payload, rpc_id);
-            if is_new_interaction(seen_interactions, &key) {
-                on_needs_interaction(app, state, "question", Some(body.as_str()));
-            }
-        }
-        "approval/requested" => {
-            let rpc_id = envelope
-                .get("rpcId")
-                .and_then(|value| value.as_str())
-                .unwrap_or("");
-            let key = interaction_key(payload, rpc_id);
-            if is_new_interaction(seen_interactions, &key) {
-                on_needs_interaction(app, state, "approval", None);
-            }
-        }
-        _ => {}
+        "question/requested" => Some(HarnessNotice::InteractionRequested {
+            key: interaction_key(payload, rpc_id),
+            kind: NoticeKind::Question,
+            detail: first_question_text(payload),
+        }),
+        "approval/requested" => Some(HarnessNotice::InteractionRequested {
+            key: interaction_key(payload, rpc_id),
+            kind: NoticeKind::Approval,
+            detail: None,
+        }),
+        _ => None,
     }
 }
 
-fn handle_host_frame(
+/// Apply one raw legacy `events.host` envelope.
+fn apply_legacy_host_frame(
     app: &AppHandle,
     state: &HarnessState,
     text: &str,
     running_sessions: &mut HashMap<String, bool>,
 ) {
-    let Ok(envelope) = serde_json::from_str::<serde_json::Value>(text) else {
+    let Some(HarnessNotice::SessionRunningChanged { session_id, running }) =
+        classify_legacy_host_frame(text)
+    else {
         return;
     };
-    let Some(payload) = envelope.get("payload") else {
-        return;
-    };
+    let previous = running_sessions.insert(session_id.clone(), running);
+    if previous == Some(true) && !running {
+        on_task_completed(app, state, &session_id);
+    }
+}
+
+/// Classify one raw legacy `events.host` envelope without side effects.
+fn classify_legacy_host_frame(text: &str) -> Option<HarnessNotice> {
+    let envelope = serde_json::from_str::<serde_json::Value>(text).ok()?;
+    let payload = envelope.get("payload")?;
     if payload.get("type").and_then(|value| value.as_str()) != Some("host/session-status") {
-        return;
+        return None;
     }
     let running = payload
         .get("running")
         .and_then(|value| value.as_bool())
         .unwrap_or(false);
-    let Some(session_id) = payload.get("sessionId").and_then(|value| value.as_str()) else {
-        return;
-    };
+    let session_id = payload
+        .get("sessionId")
+        .and_then(|value| value.as_str())?;
     if session_id.is_empty() {
-        return;
+        return None;
     }
-    let previous = running_sessions.insert(session_id.to_string(), running);
-    if previous == Some(true) && !running {
-        on_task_completed(app, state, session_id);
-    }
+    Some(HarnessNotice::SessionRunningChanged {
+        session_id: session_id.to_string(),
+        running,
+    })
 }
 
 /// Stable dedup key for a pending interaction: approval id when present,
@@ -3335,7 +3578,7 @@ fn raise_attention(app: &AppHandle, state: &HarnessState, title: &str, body: &st
     if let Some(window) = app.get_webview_window("main") {
         let _ = window.set_badge_count(Some(count));
     }
-    let _ = app.notification().builder().title(title).body(body).show();
+    post_system_notification(app, state, title, body);
 }
 
 /// The shell's chosen UI language ("zh" or "en"), synced from the frontend.
@@ -3347,7 +3590,12 @@ fn current_language(state: &HarnessState) -> String {
         .unwrap_or_else(|_| "zh".to_string())
 }
 
-fn on_needs_interaction(app: &AppHandle, state: &HarnessState, kind: &str, question: Option<&str>) {
+fn on_needs_interaction(
+    app: &AppHandle,
+    state: &HarnessState,
+    kind: NoticeKind,
+    question: Option<&str>,
+) {
     if !state.notify_enabled.load(Ordering::Acquire)
         || !state.notify_interaction.load(Ordering::Acquire)
     {
@@ -3358,19 +3606,19 @@ fn on_needs_interaction(app: &AppHandle, state: &HarnessState, kind: &str, quest
     }
     let english = current_language(state) == "en";
     let (title, body) = match (kind, english) {
-        ("question", true) => (
+        (NoticeKind::Question, true) => (
             "Needs your input",
             question.unwrap_or("Harness is waiting for your answer"),
         ),
-        ("question", false) => (
+        (NoticeKind::Question, false) => (
             "需要你的输入",
             question.unwrap_or("Harness 正在等待你的回答"),
         ),
-        ("approval", true) => (
+        (NoticeKind::Approval, true) => (
             "Needs your approval",
             "Harness needs your approval to continue",
         ),
-        _ => ("需要你的批准", "Harness 需要你的批准才能继续"),
+        (NoticeKind::Approval, false) => ("需要你的批准", "Harness 需要你的批准才能继续"),
     };
     raise_attention(app, state, title, body);
 }
@@ -3411,6 +3659,228 @@ fn clear_badge<R: tauri::Runtime>(app: &AppHandle<R>, state: &HarnessState) {
     }
 }
 
+/// Deliver a system notification through the first transport that works.
+/// macOS talks to UNUserNotificationCenter directly because the notification
+/// plugin still rides the NSUserNotification API Apple removed — on modern
+/// systems everything it posts is silently dropped. The plugin stays as the
+/// transport for the other desktop platforms.
+fn post_system_notification(app: &AppHandle, state: &HarnessState, title: &str, body: &str) {
+    #[cfg(target_os = "macos")]
+    match macos_notification::post(title, body) {
+        Ok(macos_notification::PostOutcome::Sent) => return,
+        Ok(macos_notification::PostOutcome::NotAuthorized) => {
+            // A denied permission is a user decision, not a failure, but a
+            // silent one: recording it once makes "why did nothing appear"
+            // answerable from the log page.
+            emit_log(
+                app,
+                &state.logs,
+                "desk",
+                "系统通知权限未开启，本次提醒只更新了角标。",
+            );
+            return;
+        }
+        Err(error) => {
+            emit_log(
+                app,
+                &state.logs,
+                "desk",
+                format!("发送系统通知失败：{error}"),
+            );
+            return;
+        }
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        let _ = state;
+        let _ = app.notification().builder().title(title).body(body).show();
+    }
+}
+
+/// macOS delivery over UNUserNotificationCenter, the only notification
+/// transport Apple still supports. `tauri-plugin-notification` depends on
+/// `mac-notification-sys`, whose NSUserNotification API was removed by
+/// macOS, so nothing it posts on modern systems ever shows up.
+#[cfg(target_os = "macos")]
+mod macos_notification {
+    use std::panic::AssertUnwindSafe;
+    use std::sync::OnceLock;
+    use std::time::Duration;
+
+    use block2::RcBlock;
+    use objc2::exception::catch;
+    use objc2::rc::Retained;
+    use objc2::runtime::Bool;
+    use objc2_foundation::{NSError, NSString};
+    use objc2_user_notifications::{
+        UNAuthorizationOptions, UNAuthorizationStatus, UNMutableNotificationContent,
+        UNNotificationRequest, UNNotificationSettings, UNNotificationSound,
+        UNUserNotificationCenter,
+    };
+    use std::ptr::NonNull;
+
+    const STATUS_TIMEOUT: Duration = Duration::from_secs(2);
+    const AUTH_TIMEOUT: Duration = Duration::from_secs(5);
+    const ADD_TIMEOUT: Duration = Duration::from_secs(5);
+
+    /// Stable request identifier; UN replaces the previous banner with the
+    /// same id instead of stacking duplicates for one pending interaction.
+    const REQUEST_IDENTIFIER: &str = "com.deepseek.harnessdesk.notice";
+
+    /// The process-live authorization decision so repeated notices never
+    /// re-prompt and a denied permission short-circuits before the XPC call.
+    static AUTHORIZED: OnceLock<bool> = OnceLock::new();
+
+    /// What happened to one posted banner.
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    pub enum PostOutcome {
+        Sent,
+        /// macOS is holding the app's notifications; only the badge updates.
+        NotAuthorized,
+    }
+
+    /// Why the authorization request did not end in a grant. The distinction
+    /// matters when diagnosing a missing banner: a denial is a user decision,
+    /// while a missing callback means the system never handled the request at
+    /// all (which is what an unsigned or unregistered build looks like).
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    pub enum AuthFailure {
+        Denied,
+        NoResponse,
+        Unavailable,
+    }
+
+    /// Ask macOS for alert/badge/sound authorization once per process, before
+    /// the first real notice needs it. Safe to call from any thread.
+    pub fn ensure_authorized() -> Result<(), AuthFailure> {
+        match *AUTHORIZED.get_or_init(|| request_authorization()) {
+            true => Ok(()),
+            false => Err(AUTHORIZATION_FAILURE.get().copied().unwrap_or(AuthFailure::Denied)),
+        }
+    }
+
+    /// Records why the one-shot authorization attempt failed, for the log.
+    static AUTHORIZATION_FAILURE: OnceLock<AuthFailure> = OnceLock::new();
+
+    fn request_authorization() -> bool {
+        let Some(center) = current_center() else {
+            let _ = AUTHORIZATION_FAILURE.set(AuthFailure::Unavailable);
+            return false;
+        };
+        let (sender, receiver) = std::sync::mpsc::channel();
+        // The callback arrives with the granted flag; a `false` here is either
+        // an explicit denial or a request the system never answered.
+        let block = RcBlock::new(move |granted: Bool, _error: *mut NSError| {
+            let _ = sender.send(granted.as_bool());
+        });
+        center.requestAuthorizationWithOptions_completionHandler(
+            UNAuthorizationOptions::Alert
+                | UNAuthorizationOptions::Badge
+                | UNAuthorizationOptions::Sound,
+            &block,
+        );
+        match receiver.recv_timeout(AUTH_TIMEOUT) {
+            Ok(granted) => {
+                if !granted {
+                    let _ = AUTHORIZATION_FAILURE.set(AuthFailure::Denied);
+                }
+                granted
+            }
+            Err(_) => {
+                let _ = AUTHORIZATION_FAILURE.set(AuthFailure::NoResponse);
+                false
+            }
+        }
+    }
+
+    /// Post one banner, reporting why nothing appeared when it could not.
+    pub fn post(title: &str, body: &str) -> Result<PostOutcome, String> {
+        let Some(center) = center_or_error()? else {
+            return Err("当前进程没有可用的系统通知中心。".to_string());
+        };
+        if ensure_authorized().is_err() {
+            return Ok(PostOutcome::NotAuthorized);
+        }
+        let content = UNMutableNotificationContent::new();
+        content.setTitle(&NSString::from_str(title));
+        content.setBody(&NSString::from_str(body));
+        content.setSound(Some(&UNNotificationSound::defaultSound()));
+        let request = UNNotificationRequest::requestWithIdentifier_content_trigger(
+            &NSString::from_str(REQUEST_IDENTIFIER),
+            &content,
+            None,
+        );
+        // Wait for the completion callback: it is the only signal that the
+        // request actually reached the system, and a failure there is worth
+        // reporting instead of pretending the banner went out.
+        let (sender, receiver) = std::sync::mpsc::channel();
+        let block = RcBlock::new(move |error: *mut NSError| {
+            let message = if error.is_null() {
+                None
+            } else {
+                // SAFETY: the framework owns this NSError for the duration of
+                // the callback; only its description is read out here.
+                unsafe { error.as_ref() }
+                    .map(|error| error.localizedDescription().to_string())
+            };
+            let _ = sender.send(message);
+        });
+        center.addNotificationRequest_withCompletionHandler(&request, Some(&block));
+        match receiver.recv_timeout(ADD_TIMEOUT) {
+            Ok(None) => Ok(PostOutcome::Sent),
+            Ok(Some(message)) => Err(message),
+            Err(_) => Err("等待系统确认通知投递超时。".to_string()),
+        }
+    }
+
+    /// Live authorization status for the settings page: `(determined, granted)`.
+    /// Reading happens on demand so a grant added in System Settings after a
+    /// denial is reflected without relaunching the app.
+    pub fn authorization_status() -> (bool, bool) {
+        let Some(center) = current_center() else {
+            return (false, false);
+        };
+        let (sender, receiver) = std::sync::mpsc::channel();
+        let block = RcBlock::new(move |settings: NonNull<UNNotificationSettings>| {
+            // SAFETY: the framework hands this pointer to the block for
+            // reading only, and it stays valid for the duration of the call.
+            let status = unsafe { settings.as_ref().authorizationStatus() };
+            let _ = sender.send(status);
+        });
+        center.getNotificationSettingsWithCompletionHandler(&block);
+        match receiver.recv_timeout(STATUS_TIMEOUT) {
+            Ok(status) => (
+                status != UNAuthorizationStatus::NotDetermined,
+                status == UNAuthorizationStatus::Authorized
+                    || status == UNAuthorizationStatus::Provisional
+                    || status == UNAuthorizationStatus::Ephemeral,
+            ),
+            Err(_) => (false, false),
+        }
+    }
+
+    /// The shared notification center, or None where the process cannot host
+    /// one. Outside a proper app bundle (e.g. `tauri dev`) the framework
+    /// raises an Objective-C exception instead of returning nil, so catch it.
+    fn current_center() -> Option<Retained<UNUserNotificationCenter>> {
+        catch(AssertUnwindSafe(
+            UNUserNotificationCenter::currentNotificationCenter,
+        ))
+        .ok()
+    }
+
+    /// The notification center, with the two failure modes told apart:
+    /// `Ok(None)` means this process has none (unbundled dev build).
+    fn center_or_error() -> Result<Option<Retained<UNUserNotificationCenter>>, String> {
+        match catch(AssertUnwindSafe(
+            UNUserNotificationCenter::currentNotificationCenter,
+        )) {
+            Ok(center) => Ok(Some(center)),
+            Err(_) => Ok(None),
+        }
+    }
+}
+
 #[tauri::command]
 fn harness_status(state: State<'_, HarnessState>) -> HarnessStatus {
     snapshot(&state)
@@ -3444,6 +3914,74 @@ fn notification_prefs(state: State<'_, HarnessState>) -> NotificationPrefsView {
         task_completed: state.notify_task_completed.load(Ordering::Acquire),
         interaction: state.notify_interaction.load(Ordering::Acquire),
     }
+}
+
+/// What the platform reports about the shell's notification permission.
+/// `determined` stays false while there is nothing to read (dev builds
+/// without an app bundle) or the system has not been asked yet.
+#[derive(Serialize)]
+struct NotificationPermission {
+    granted: bool,
+    determined: bool,
+}
+
+#[tauri::command]
+fn notification_permission() -> NotificationPermission {
+    #[cfg(target_os = "macos")]
+    {
+        let (determined, granted) = macos_notification::authorization_status();
+        NotificationPermission {
+            granted,
+            determined,
+        }
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        NotificationPermission {
+            granted: true,
+            determined: true,
+        }
+    }
+}
+
+/// Post one banner so the user can confirm the transport end to end (and see
+/// the permission prompt land when macOS has not asked yet).
+#[tauri::command]
+fn send_test_notification(app: AppHandle, state: State<'_, HarnessState>) {
+    let english = current_language(&state) == "en";
+    let (title, body) = if english {
+        (
+            "Notifications are working",
+            "This is how a task completion or a pending question will look.",
+        )
+    } else {
+        (
+            "通知已就绪",
+            "任务完成或需要你回应时，就会收到这样的提醒。",
+        )
+    };
+    // The test button must not be gated by the per-category preferences: it
+    // exists precisely to check the transport those preferences feed.
+    post_system_notification(&app, &state, title, body);
+}
+
+/// Open the macOS pane where notification permission is granted. The system
+/// has no per-app deep link, so the shell lands on the notifications pane
+/// and the user picks the app there.
+#[tauri::command]
+fn open_notification_settings() -> Result<(), String> {
+    #[cfg(target_os = "macos")]
+    {
+        Command::new("open")
+            .arg("x-apple.systempreferences:com.apple.Notifications-Settings.extension")
+            .status()
+            .map_err(|error| format!("无法打开系统设置：{error}"))?
+            .success()
+            .then_some(())
+            .ok_or_else(|| "无法打开系统设置。".to_string())
+    }
+    #[cfg(not(target_os = "macos"))]
+    Err("只有 macOS 提供系统通知设置。".to_string())
 }
 
 #[tauri::command]
@@ -4866,6 +5404,31 @@ pub fn run() {
                 app.handle().clone(),
                 app.state::<HarnessState>().inner().clone(),
             );
+            #[cfg(target_os = "macos")]
+            {
+                // Ask macOS for notification permission up front, off the main
+                // thread, so the first real notice is never swallowed by an
+                // unanswered authorization prompt. The outcome is logged
+                // because a missing banner is otherwise indistinguishable
+                // from a task that simply never needed attention.
+                let handle = app.handle().clone();
+                std::thread::spawn(move || {
+                    let message = match macos_notification::ensure_authorized() {
+                        Ok(()) => "系统通知权限已就绪。".to_string(),
+                        Err(macos_notification::AuthFailure::Denied) => {
+                            "系统通知权限被拒绝，提醒将只更新应用角标。".to_string()
+                        }
+                        Err(macos_notification::AuthFailure::NoResponse) => {
+                            "系统未回应通知授权请求，提醒可能无法送达。".to_string()
+                        }
+                        Err(macos_notification::AuthFailure::Unavailable) => {
+                            "当前没有可用的系统通知中心，提醒可能无法送达。".to_string()
+                        }
+                    };
+                    let state = handle.state::<HarnessState>();
+                    emit_log(&handle, &state.logs, "desk", message);
+                });
+            }
             Ok(())
         })
         .on_menu_event(|app, event| match event.id().as_ref() {
@@ -4965,6 +5528,9 @@ pub fn run() {
             set_dock_icon_variant,
             set_notification_prefs,
             notification_prefs,
+            notification_permission,
+            send_test_notification,
+            open_notification_settings,
             set_language,
         ])
         .build(tauri::generate_context!())
@@ -5625,6 +6191,269 @@ mod tests {
         assert!(seen.len() <= MAX_SEEN_INTERACTIONS);
         // A key evicted by the bound is treated as new again.
         assert!(is_new_interaction(&mut seen, "a:1"));
+    }
+
+    fn mux_question_item(event: &str, event_id: &str) -> serde_json::Value {
+        serde_json::json!({
+            "type": "item",
+            "streamId": "desk-events",
+            "value": {
+                "type": "waterfall",
+                "event": event,
+                "eventId": event_id,
+                "request": { "questions": [{ "id": "q-1", "question": "继续吗？" }] }
+            }
+        })
+    }
+
+    fn mux_approval_item(event: &str, event_id: &str) -> serde_json::Value {
+        serde_json::json!({
+            "type": "item",
+            "streamId": "desk-events",
+            "value": {
+                "type": "waterfall",
+                "event": event,
+                "eventId": event_id,
+                "request": { "toolName": "bash", "reason": "rm -rf" }
+            }
+        })
+    }
+
+    #[test]
+    fn mux_open_frame_matches_the_stream_protocol() {
+        let frame: serde_json::Value =
+            serde_json::from_str(&events_stream_open_frame()).expect("valid JSON");
+        assert_eq!(frame["type"], "open");
+        assert_eq!(frame["streamId"], EVENTS_STREAM_ID);
+        assert_eq!(frame["endpoint"], "$events");
+        assert_eq!(frame["payload"], serde_json::json!({ "args": {} }));
+    }
+
+    #[test]
+    fn mux_waterfall_frames_yield_interaction_notices() {
+        match classify_mux_message(&mux_question_item("user-questions/request", "evt-1").to_string())
+        {
+            HarnessInbound::Notice(HarnessNotice::InteractionRequested {
+                key,
+                kind,
+                detail,
+            }) => {
+                assert_eq!(key, "q:q-1");
+                assert_eq!(kind, NoticeKind::Question);
+                assert_eq!(detail.as_deref(), Some("继续吗？"));
+            }
+            other => panic!("unexpected inbound: {other:?}"),
+        }
+
+        match classify_mux_message(&mux_approval_item("approval/request", "evt-2").to_string()) {
+            HarnessInbound::Notice(HarnessNotice::InteractionRequested {
+                key,
+                kind,
+                detail,
+            }) => {
+                assert_eq!(key, "q:evt-2");
+                assert_eq!(kind, NoticeKind::Approval);
+                assert_eq!(detail.as_deref(), Some("bash"));
+            }
+            other => panic!("unexpected inbound: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn mux_replays_dedup_through_a_stable_key() {
+        // Reconnects re-deliver still-pending requests verbatim; both passes
+        // must classify to the same dedup key so only one notice fires.
+        let frame = mux_question_item("user-questions/request", "evt-1");
+        let keys: Vec<String> = [0, 1]
+            .iter()
+            .map(|_| match classify_mux_message(&frame.to_string()) {
+                HarnessInbound::Notice(HarnessNotice::InteractionRequested { key, .. }) => key,
+                other => panic!("unexpected inbound: {other:?}"),
+            })
+            .collect();
+        assert_eq!(keys[0], keys[1]);
+    }
+
+    #[test]
+    fn mux_emit_frames_track_session_running() {
+        let status = |running: bool| {
+            serde_json::json!({
+                "type": "item",
+                "streamId": "desk-events",
+                "value": {
+                    "type": "emit",
+                    "event": "api-session/status",
+                    "args": ["sess-1", running]
+                }
+            })
+        };
+        match classify_mux_message(&status(true).to_string()) {
+            HarnessInbound::Notice(HarnessNotice::SessionRunningChanged {
+                session_id,
+                running,
+            }) => {
+                assert_eq!(session_id, "sess-1");
+                assert!(running);
+            }
+            other => panic!("unexpected inbound: {other:?}"),
+        }
+        match classify_mux_message(&status(false).to_string()) {
+            HarnessInbound::Notice(HarnessNotice::SessionRunningChanged { running, .. }) => {
+                assert!(!running);
+            }
+            other => panic!("unexpected inbound: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn mux_ignores_bookkeeping_and_unknown_events() {
+        let ready = serde_json::json!({
+            "type": "item",
+            "streamId": "desk-events",
+            "value": { "type": "ready", "clientId": "c", "host": "/" }
+        });
+        assert_eq!(classify_mux_message(&ready.to_string()), HarnessInbound::Ignore);
+
+        let cancel = serde_json::json!({
+            "type": "item",
+            "streamId": "desk-events",
+            "value": { "type": "cancel", "eventId": "evt-9" }
+        });
+        assert_eq!(classify_mux_message(&cancel.to_string()), HarnessInbound::Ignore);
+
+        // Future dsh releases may forward events the shell has never heard of.
+        let unknown_event = serde_json::json!({
+            "type": "item",
+            "streamId": "desk-events",
+            "value": { "type": "emit", "event": "brand-new/event", "args": [1, 2] }
+        });
+        assert_eq!(
+            classify_mux_message(&unknown_event.to_string()),
+            HarnessInbound::Ignore
+        );
+
+        let unknown_message = serde_json::json!({ "type": "something-new", "streamId": "desk-events" });
+        assert_eq!(
+            classify_mux_message(&unknown_message.to_string()),
+            HarnessInbound::Ignore
+        );
+
+        assert_eq!(classify_mux_message("not json"), HarnessInbound::Ignore);
+    }
+
+    #[test]
+    fn mux_stream_failure_frames_ask_for_reconnect() {
+        assert_eq!(
+            classify_mux_message(r#"{ "type": "end", "streamId": "desk-events" }"#),
+            HarnessInbound::StreamFailed
+        );
+        assert_eq!(
+            classify_mux_message(
+                r#"{ "type": "error", "streamId": "desk-events", "error": { "message": "boom" } }"#
+            ),
+            HarnessInbound::StreamFailed
+        );
+    }
+
+    #[test]
+    fn forwarded_event_names_stay_compatible_across_generations() {
+        assert!(matches!(
+            forwarded_event_kind("user-questions/request"),
+            Some(ForwardedEventKind::Question)
+        ));
+        assert!(matches!(
+            forwarded_event_kind("question/requested"),
+            Some(ForwardedEventKind::Question)
+        ));
+        assert!(matches!(
+            forwarded_event_kind("approval/request"),
+            Some(ForwardedEventKind::Approval)
+        ));
+        assert!(matches!(
+            forwarded_event_kind("api-session/status"),
+            Some(ForwardedEventKind::SessionStatus)
+        ));
+        assert!(matches!(
+            forwarded_event_kind("host/session-status"),
+            Some(ForwardedEventKind::SessionStatus)
+        ));
+        assert!(forwarded_event_kind("unrelated/event").is_none());
+    }
+
+    #[test]
+    fn legacy_mux_envelopes_still_yield_interaction_notices() {
+        let question = serde_json::json!({
+            "rpcId": "rpc-1",
+            "payload": {
+                "type": "question/requested",
+                "sessionId": "s1",
+                "questions": [{ "id": "q-9", "question": "选择目录" }]
+            }
+        });
+        assert_eq!(
+            classify_legacy_mux_frame(&question.to_string()),
+            Some(HarnessNotice::InteractionRequested {
+                key: "q:q-9".to_string(),
+                kind: NoticeKind::Question,
+                detail: Some("选择目录".to_string()),
+            })
+        );
+
+        let approval = serde_json::json!({
+            "rpcId": "rpc-2",
+            "payload": {
+                "type": "approval/requested",
+                "sessionId": "s1",
+                "approvalId": "ap-1",
+                "toolName": "bash"
+            }
+        });
+        assert_eq!(
+            classify_legacy_mux_frame(&approval.to_string()),
+            Some(HarnessNotice::InteractionRequested {
+                key: "a:ap-1".to_string(),
+                kind: NoticeKind::Approval,
+                detail: None,
+            })
+        );
+
+        assert_eq!(classify_legacy_mux_frame("{}"), None);
+    }
+
+    #[test]
+    fn legacy_host_envelopes_still_track_sessions() {
+        let frame = serde_json::json!({
+            "rpcId": "rpc-3",
+            "payload": { "type": "host/session-status", "sessionId": "s1", "running": false }
+        });
+        assert_eq!(
+            classify_legacy_host_frame(&frame.to_string()),
+            Some(HarnessNotice::SessionRunningChanged {
+                session_id: "s1".to_string(),
+                running: false,
+            })
+        );
+        assert_eq!(classify_legacy_host_frame("{}"), None);
+    }
+
+    #[test]
+    fn empty_details_do_not_become_blank_notice_bodies() {
+        let bare = serde_json::json!({
+            "type": "item",
+            "streamId": "desk-events",
+            "value": {
+                "type": "waterfall",
+                "event": "user-questions/request",
+                "eventId": "evt-3",
+                "request": { "questions": [] }
+            }
+        });
+        match classify_mux_message(&bare.to_string()) {
+            HarnessInbound::Notice(HarnessNotice::InteractionRequested { detail, .. }) => {
+                assert_eq!(detail, None);
+            }
+            other => panic!("unexpected inbound: {other:?}"),
+        }
     }
 
     fn disposition(url: &str) -> NavigationDisposition {

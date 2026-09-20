@@ -12,6 +12,10 @@ import {
   translate,
 } from "./i18n.js";
 import { notificationPrefsPayload } from "./notification-prefs.js";
+import {
+  normalizeNotificationPermission,
+  shouldShowNotificationPermissionHint,
+} from "./notification-permission.js";
 import { shouldShowAppUpdateBanner } from "./update-banner.js";
 import {
   DOCK_ICON_VARIANT_STORAGE_KEY,
@@ -127,6 +131,9 @@ const elements = {
   notifyEnabledToggle: document.querySelector("#notify-enabled-toggle"),
   notifyTaskToggle: document.querySelector("#notify-task-toggle"),
   notifyInteractionToggle: document.querySelector("#notify-interaction-toggle"),
+  notifyPermissionHint: document.querySelector("#notify-permission-hint"),
+  notifyPermissionOpen: document.querySelector("#notify-permission-open"),
+  notifyTestSend: document.querySelector("#notify-test-send"),
   toast: document.querySelector("#toast"),
 };
 
@@ -624,7 +631,12 @@ function closePanels() {
 function showPanel(panel) {
   elements.logsPanel.classList.toggle("hidden", panel !== elements.logsPanel);
   elements.settingsPanel.classList.toggle("hidden", panel !== elements.settingsPanel);
-  if (panel === elements.settingsPanel) renderSettingsTab();
+  if (panel === elements.settingsPanel) {
+    renderSettingsTab();
+    // Permission can change in System Settings at any moment; re-read it
+    // every time the settings open instead of caching a stale verdict.
+    void refreshNotificationPermission();
+  }
 }
 
 async function setLanguage(pref) {
@@ -1284,6 +1296,45 @@ async function syncNotificationPrefs() {
   }
 }
 
+// The backend's own preferences say "what to notify"; the platform permission
+// says "whether anything can go out at all". Surfacing the second one keeps a
+// denied macOS permission from silently eating every notification.
+async function refreshNotificationPermission() {
+  try {
+    const permission = normalizeNotificationPermission(await call("notification_permission"));
+    elements.notifyPermissionHint.classList.toggle(
+      "hidden",
+      !shouldShowNotificationPermissionHint(permission),
+    );
+  } catch {
+    elements.notifyPermissionHint.classList.add("hidden");
+  }
+}
+
+async function openNotificationSettings() {
+  try {
+    await call("open_notification_settings");
+  } catch (error) {
+    setToast(errorMessage(error), true);
+    return;
+  }
+  await refreshNotificationPermission();
+}
+
+// A test banner is the only way to tell "notifications are broken" apart from
+// "nothing has needed your attention yet", so the settings page keeps it one
+// click away and re-reads the permission afterwards (the first send is what
+// makes macOS ask).
+async function sendTestNotification() {
+  try {
+    await call("send_test_notification");
+  } catch (error) {
+    setToast(errorMessage(error), true);
+    return;
+  }
+  await refreshNotificationPermission();
+}
+
 async function openRuntimeDirectory() {
   try {
     await call("open_runtime_directory");
@@ -1414,6 +1465,12 @@ function bindEvents() {
     state.notifyInteraction = elements.notifyInteractionToggle.checked;
     localStorage.setItem("notifyInteraction", String(state.notifyInteraction));
     void syncNotificationPrefs();
+  });
+  elements.notifyPermissionOpen.addEventListener("click", () => {
+    void openNotificationSettings();
+  });
+  elements.notifyTestSend.addEventListener("click", () => {
+    void sendTestNotification();
   });
   elements.runtimeInstallButton.addEventListener("click", installRuntime);
   elements.refreshRuntimeButton.addEventListener("click", refreshRuntime);
@@ -1585,6 +1642,7 @@ async function initialize() {
   await listenForOutput();
   await Promise.all([refreshStatus(), refreshRuntime(), loadLogs()]);
   await syncNotificationPrefs();
+  await refreshNotificationPermission();
   await call("set_language", { language: lang }).catch(() => {});
 
   if (state.status?.running) {

@@ -392,6 +392,14 @@
                   </label>
                 </div>
                 <p class="setting-note" data-i18n="advanced.notifyNote">仅当窗口未处于聚焦状态时才会提醒，避免打扰正在使用的你；回到窗口后角标会自动清除。</p>
+                <p class="setting-note hidden" id="notify-permission-hint">
+                  <span data-i18n="advanced.notifyPermissionHint">系统已关闭本应用的通知权限，提醒将无法送达。</span>
+                  <button type="button" class="secondary-button compact-button" id="notify-permission-open" data-i18n="advanced.notifyPermissionOpen">打开系统设置</button>
+                </p>
+                <p class="setting-note">
+                  <span data-i18n="advanced.notifyTestHint">不确定能否收到？发一条测试通知确认。</span>
+                  <button type="button" class="secondary-button compact-button" id="notify-test-send" data-i18n="advanced.notifyTest">发送测试通知</button>
+                </p>
               </div>
             </section>
 

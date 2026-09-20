@@ -18,6 +18,8 @@
     "test:dsh-channel-wiring": "node tests/dsh-channel-wiring.test.mjs",
     "test:macos-process-label": "node tests/macos-process-label.test.mjs",
     "test:notification-prefs": "node tests/notification-prefs.test.mjs",
+    "test:notification-permission": "node tests/notification-permission.test.mjs",
+    "test:notification-wiring": "node tests/notification-wiring.test.mjs",
     "test:paste-bridge": "node tests/paste-bridge.test.mjs",
     "test:external-links": "node tests/external-links.test.mjs",
     "test:update-banner": "node tests/update-banner.test.mjs",

@@ -192,6 +192,10 @@ const messages = {
     "advanced.notifyInteraction": "需要交互时提醒",
     "advanced.notifyInteractionDesc": "Harness 向你提问或请求批准时通知你。",
     "advanced.notifyNote": "仅当窗口未处于聚焦状态时才会提醒，避免打扰正在使用的你；回到窗口后角标会自动清除。",
+    "advanced.notifyPermissionHint": "系统已关闭本应用的通知权限，提醒将无法送达。",
+    "advanced.notifyPermissionOpen": "打开系统设置",
+    "advanced.notifyTestHint": "不确定能否收到？发一条测试通知确认。",
+    "advanced.notifyTest": "发送测试通知",
 
     // About
     "about.tagline": "原生跨平台 DeepSeek Harness 桌面客户端",
@@ -422,6 +426,10 @@ const messages = {
     "advanced.notifyInteraction": "Notify when interaction is needed",
     "advanced.notifyInteractionDesc": "Notify you when the Harness asks a question or requests approval.",
     "advanced.notifyNote": "Notifications only fire while the window is unfocused so they never interrupt your work; the badge clears when you return.",
+    "advanced.notifyPermissionHint": "The system has turned off notifications for this app, so reminders cannot get through.",
+    "advanced.notifyPermissionOpen": "Open System Settings",
+    "advanced.notifyTestHint": "Not sure it reaches you? Send a test notification.",
+    "advanced.notifyTest": "Send a test notification",
 
     "about.tagline": "Native cross-platform DeepSeek Harness desktop client",
     "about.disclaimer": "DeepSeek Harness is developed by DeepSeek AI. DeepSeek Harness Desk is an independent third-party project, not affiliated with or endorsed by DeepSeek AI.",
