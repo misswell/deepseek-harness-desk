@@ -3727,9 +3727,15 @@ mod macos_notification {
     /// same id instead of stacking duplicates for one pending interaction.
     const REQUEST_IDENTIFIER: &str = "com.deepseek.harnessdesk.notice";
 
-    /// The process-live authorization decision so repeated notices never
-    /// re-prompt and a denied permission short-circuits before the XPC call.
-    static AUTHORIZED: OnceLock<bool> = OnceLock::new();
+    /// Set once this process has seen a real grant, so repeated notices never
+    /// re-read the permission. Only a grant is cached: a prompt the user has
+    /// not answered yet, or a denial they later lift in System Settings, must
+    /// not mute every banner for the rest of the run.
+    static GRANTED: OnceLock<()> = OnceLock::new();
+
+    /// Whether the authorization dialog has been issued, so no second notice
+    /// waits behind a copy of the same prompt.
+    static PROMPTED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 
     /// What happened to one posted banner.
     #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -3750,13 +3756,43 @@ mod macos_notification {
         Unavailable,
     }
 
-    /// Ask macOS for alert/badge/sound authorization once per process, before
-    /// the first real notice needs it. Safe to call from any thread.
+    /// Make sure macOS would deliver a banner now, asking once per process if
+    /// it has not decided yet. Safe to call from any thread.
     pub fn ensure_authorized() -> Result<(), AuthFailure> {
-        match *AUTHORIZED.get_or_init(|| request_authorization()) {
-            true => Ok(()),
-            false => Err(AUTHORIZATION_FAILURE.get().copied().unwrap_or(AuthFailure::Denied)),
+        if GRANTED.get().is_some() {
+            return Ok(());
         }
+        // Reading the live status is what keeps this recoverable: it answers
+        // immediately once the user has decided, one way or the other.
+        let (determined, granted) = authorization_status();
+        if granted {
+            let _ = GRANTED.set(());
+            return Ok(());
+        }
+        if determined {
+            return Err(AuthFailure::Denied);
+        }
+        if PROMPTED.swap(true, std::sync::atomic::Ordering::AcqRel) {
+            // The dialog is still up; a second request would only block here.
+            return Err(AuthFailure::NoResponse);
+        }
+        match request_authorization() {
+            true => {
+                let _ = GRANTED.set(());
+                Ok(())
+            }
+            false => Err(AUTHORIZATION_FAILURE
+                .get()
+                .copied()
+                .unwrap_or(AuthFailure::Denied)),
+        }
+    }
+
+    /// Put the dialog back on the table. The settings page's test button is how
+    /// a prompt dismissed by accident gets answered, so it must not be
+    /// suppressed by the one-shot guard the background notices use.
+    pub fn ask_for_authorization_again() {
+        PROMPTED.store(false, std::sync::atomic::Ordering::Release);
     }
 
     /// Records why the one-shot authorization attempt failed, for the log.
@@ -3962,6 +3998,8 @@ fn send_test_notification(app: AppHandle, state: State<'_, HarnessState>) {
     };
     // The test button must not be gated by the per-category preferences: it
     // exists precisely to check the transport those preferences feed.
+    #[cfg(target_os = "macos")]
+    macos_notification::ask_for_authorization_again();
     post_system_notification(&app, &state, title, body);
 }
 

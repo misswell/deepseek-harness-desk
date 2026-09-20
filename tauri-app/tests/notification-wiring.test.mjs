@@ -147,6 +147,24 @@ assert.match(
   /void refreshNotificationPermission\(\)/,
   "opening the settings must refresh the permission",
 );
+// A prompt the user has not answered inside the timeout is not a denial, and a
+// denial lifted in System Settings is not one either: only a real grant may be
+// held for the rest of the run, or every later banner goes quietly missing.
+assert.equal(
+  /AUTHORIZED\.get_or_init/.test(rustSource),
+  false,
+  "an unanswered authorization request must not be cached as a denial",
+);
+assert.match(
+  rustSource,
+  /let \(determined, granted\) = authorization_status\(\);/,
+  "the permission must be re-read live until it is granted",
+);
+assert.match(
+  rustSource,
+  /macos_notification::ask_for_authorization_again\(\)/,
+  "the test button must be able to bring the prompt back",
+);
 assert.match(
   htmlSource,
   /id="notify-permission-hint"/,
