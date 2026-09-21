@@ -2,7 +2,7 @@
 
 DeepSeek Harness Desk 当前正式版是基于 **Tauri v2** 构建的跨平台桌面客户端，不是 SwiftUI 原生应用。应用代码位于 [`tauri-app`](tauri-app)，使用 Rust、WebView 和系统原生能力，支持 macOS、Windows 与 Linux。
 
-当前版本：0.3.48。安装包请从 [GitHub Releases](https://github.com/misswell/deepseek-harness-desk/releases/latest) 下载。
+当前版本：0.3.49。安装包请从 [GitHub Releases](https://github.com/misswell/deepseek-harness-desk/releases/latest) 下载。
 官网：[harness.liuguofeng.com](https://harness.liuguofeng.com/)
 
 ## 开发
@@ -19,7 +19,7 @@ Tauri 版功能包括：启动、停止、重启 Harness；自动选择 `3080–
 
 为降低内存占用，应用提供多级内存释放策略（均在“设置 → 高级 → 内存与性能”中可开关）：关闭窗口到菜单栏/托盘时卸载 Harness 网页（释放 WebView 数百 MB 内存）；窗口失焦 20 秒后也自动卸载页面，回到窗口时重新加载；窗口可见但 Harness 持续空闲（约 10 分钟无事件、无交互）时自动重新加载页面，回收渲染进程长期运行累积的内存。同时为 Harness 后端限制 V8 堆上限，避免长时间运行的会话把内存撑到数 GB。这些操作都只释放渲染页面（WebView）的内存，Harness 后台服务与全部会话状态保持运行，重新加载后自动恢复。
 
-应用内置任务提醒：通过订阅 Harness 的实时事件流，当 Harness 完成任务、向你提问或请求批准时，会在应用图标上显示角标（macOS Dock 角标 / Linux 启动器角标）并发送系统通知；仅当窗口未聚焦时才提醒，回到窗口后角标自动清除。可在“设置 → 高级 → 通知提醒”中分别开关。macOS 直接走 `UNUserNotificationCenter`（通知插件依赖的 `NSUserNotification` 已被 Apple 移除，发出去的通知会被静默丢弃），并在同一页显示系统通知权限状态、提供“打开系统设置”与“发送测试通知”，权限被关掉时不再毫无提示。
+应用内置任务提醒：通过订阅 Harness 的实时事件流，当 Harness 完成任务、向你提问、请你确认计划、请求批准或执行失败时，会在应用图标上显示角标（macOS Dock 角标 / Linux 启动器角标）并发送系统通知；仅当窗口未聚焦时才提醒，回到窗口后角标自动清除。同一轮任务只会提醒一次：失败与待交互优先于“任务已完成”，不会先弹“需要你的批准”再弹“任务已完成”。可在“设置 → 高级 → 通知提醒”中按类别开关；“在通知中显示详细内容”默认关闭，问题原文和报错信息不会出现在锁屏通知上，需要时再打开。macOS 直接走 `UNUserNotificationCenter`（通知插件依赖的 `NSUserNotification` 已被 Apple 移除，发出去的通知会被静默丢弃），并在同一页显示系统通知权限状态、提供“打开系统设置”与“发送测试通知”，权限被关掉时不再毫无提示。
 
 应用界面支持国际化（中文 / English）：默认跟随系统语言，也可在“设置 → 通用 → 界面语言”手动切换；托盘菜单和系统通知会随语言一起切换。Harness 网页本身按系统语言显示（由 Harness 内部提供）。
 
