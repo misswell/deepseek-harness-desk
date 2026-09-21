@@ -131,6 +131,8 @@ const elements = {
   notifyEnabledToggle: document.querySelector("#notify-enabled-toggle"),
   notifyTaskToggle: document.querySelector("#notify-task-toggle"),
   notifyInteractionToggle: document.querySelector("#notify-interaction-toggle"),
+  notifyErrorToggle: document.querySelector("#notify-error-toggle"),
+  notifyDetailToggle: document.querySelector("#notify-detail-toggle"),
   notifyPermissionHint: document.querySelector("#notify-permission-hint"),
   notifyPermissionOpen: document.querySelector("#notify-permission-open"),
   notifyTestSend: document.querySelector("#notify-test-send"),
@@ -175,6 +177,9 @@ const state = {
   notifyEnabled: localStorage.getItem("notifyEnabled") !== "false",
   notifyTask: localStorage.getItem("notifyTask") !== "false",
   notifyInteraction: localStorage.getItem("notifyInteraction") !== "false",
+  notifyError: localStorage.getItem("notifyError") !== "false",
+  // Off unless the user asked for it: a banner is readable from the lock screen.
+  notifyDetail: localStorage.getItem("notifyDetail") === "true",
 };
 
 // --- Internationalization ---
@@ -1290,6 +1295,8 @@ async function syncNotificationPrefs() {
       enabled: state.notifyEnabled,
       taskCompleted: state.notifyTask,
       interaction: state.notifyInteraction,
+      error: state.notifyError,
+      detail: state.notifyDetail,
     }));
   } catch (error) {
     setToast(errorMessage(error), true);
@@ -1466,6 +1473,16 @@ function bindEvents() {
     localStorage.setItem("notifyInteraction", String(state.notifyInteraction));
     void syncNotificationPrefs();
   });
+  elements.notifyErrorToggle.addEventListener("change", () => {
+    state.notifyError = elements.notifyErrorToggle.checked;
+    localStorage.setItem("notifyError", String(state.notifyError));
+    void syncNotificationPrefs();
+  });
+  elements.notifyDetailToggle.addEventListener("change", () => {
+    state.notifyDetail = elements.notifyDetailToggle.checked;
+    localStorage.setItem("notifyDetail", String(state.notifyDetail));
+    void syncNotificationPrefs();
+  });
   elements.notifyPermissionOpen.addEventListener("click", () => {
     void openNotificationSettings();
   });
@@ -1628,6 +1645,8 @@ async function initialize() {
   elements.notifyEnabledToggle.checked = state.notifyEnabled;
   elements.notifyTaskToggle.checked = state.notifyTask;
   elements.notifyInteractionToggle.checked = state.notifyInteraction;
+  elements.notifyErrorToggle.checked = state.notifyError;
+  elements.notifyDetailToggle.checked = state.notifyDetail;
   elements.languageSelect.value = langPref;
   document.documentElement.lang = lang === "zh" ? "zh-CN" : "en";
   applyStaticTranslations(document, lang);

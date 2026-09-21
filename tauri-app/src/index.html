@@ -390,6 +390,20 @@
                     </span>
                     <input type="checkbox" id="notify-interaction-toggle" />
                   </label>
+                  <label class="setting-row">
+                    <span>
+                      <strong data-i18n="advanced.notifyError">任务执行失败时提醒</strong>
+                      <small data-i18n="advanced.notifyErrorDesc">Harness 的任务出错中断时通知你。</small>
+                    </span>
+                    <input type="checkbox" id="notify-error-toggle" />
+                  </label>
+                  <label class="setting-row">
+                    <span>
+                      <strong data-i18n="advanced.notifyDetail">在通知中显示详细内容</strong>
+                      <small data-i18n="advanced.notifyDetailDesc">把问题原文和报错信息写进通知。锁屏上任何人都能读到，默认关闭。</small>
+                    </span>
+                    <input type="checkbox" id="notify-detail-toggle" />
+                  </label>
                 </div>
                 <p class="setting-note" data-i18n="advanced.notifyNote">仅当窗口未处于聚焦状态时才会提醒，避免打扰正在使用的你；回到窗口后角标会自动清除。</p>
                 <p class="setting-note hidden" id="notify-permission-hint">

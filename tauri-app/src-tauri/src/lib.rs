@@ -144,6 +144,10 @@ struct HarnessState {
     notify_enabled: Arc<AtomicBool>,
     notify_task_completed: Arc<AtomicBool>,
     notify_interaction: Arc<AtomicBool>,
+    notify_error: Arc<AtomicBool>,
+    // Whether a banner may quote Harness payload text (question wording, failure
+    // message). Off by default: banners are readable from the lock screen.
+    notify_detail: Arc<AtomicBool>,
     pending_attention: Arc<AtomicI64>,
     language: Arc<Mutex<String>>,
 }
@@ -153,6 +157,8 @@ struct NotificationPrefsView {
     enabled: bool,
     task_completed: bool,
     interaction: bool,
+    error: bool,
+    detail: bool,
 }
 
 #[derive(Serialize, Clone, Debug)]
@@ -3110,8 +3116,7 @@ fn spawn_task_watcher(app: AppHandle, state: HarnessState) {
         // loop: dsh replays still-pending interaction requests to every new
         // client, and a session observed running before a reconnect must still
         // fire "completed" when it goes idle afterwards.
-        let mut seen_interactions = VecDeque::new();
-        let mut running_sessions = HashMap::new();
+        let mut ledger = AttentionLedger::default();
         loop {
             let port = state.port.load(Ordering::Relaxed);
             if port == 0 {
@@ -3119,18 +3124,11 @@ fn spawn_task_watcher(app: AppHandle, state: HarnessState) {
                 // process says nothing about the next one, and keeping it
                 // would turn the first replay after a restart into a bogus
                 // "task completed" for work the user restarted themselves.
-                running_sessions.clear();
+                ledger.reset();
                 tokio::time::sleep(Duration::from_secs(1)).await;
                 continue;
             }
-            let outcome = watch_harness_events(
-                &app,
-                &state,
-                port,
-                &mut seen_interactions,
-                &mut running_sessions,
-            )
-            .await;
+            let outcome = watch_harness_events(&app, &state, port, &mut ledger).await;
             // A dead or incompatible event stream must not turn into a tight
             // reconnect loop against the Harness backend.
             retry_delay = match outcome {
@@ -3175,8 +3173,7 @@ async fn watch_harness_events(
     app: &AppHandle,
     state: &HarnessState,
     port: u16,
-    seen_interactions: &mut VecDeque<String>,
-    running_sessions: &mut HashMap<String, bool>,
+    ledger: &mut AttentionLedger,
 ) -> Result<(), String> {
     let cookie = state
         .auth_cookie
@@ -3201,32 +3198,37 @@ async fn watch_harness_events(
         // through to the legacy endpoints instead of reconnecting forever.
         let mut stream_delivered = false;
         let mut stream_refused = false;
-        while let Some(frame) = mux.next().await {
-            match frame {
-                Ok(message) => {
-                    touch_harness_activity(state);
-                    let Ok(text) = message.to_text() else {
-                        continue;
-                    };
-                    match classify_mux_message(text) {
-                        HarnessInbound::Notice(notice) => {
-                            stream_delivered = true;
-                            apply_harness_notice(
-                                app,
-                                state,
-                                notice,
-                                seen_interactions,
-                                running_sessions,
-                            );
+        loop {
+            // Watching the deadline alongside the socket is what lets a
+            // completion wait: the frames that decide whether it is overtaken
+            // arrive on this very stream.
+            let notices = tokio::select! {
+                biased;
+                frame = mux.next() => match frame {
+                    Some(Ok(message)) => {
+                        touch_harness_activity(state);
+                        let Ok(text) = message.to_text() else {
+                            continue;
+                        };
+                        match classify_mux_message(text) {
+                            HarnessInbound::Notice(notice) => {
+                                stream_delivered = true;
+                                ledger.route(notice, Instant::now())
+                            }
+                            HarnessInbound::StreamFailed => {
+                                stream_refused = true;
+                                break;
+                            }
+                            HarnessInbound::Ignore => Vec::new(),
                         }
-                        HarnessInbound::StreamFailed => {
-                            stream_refused = true;
-                            break;
-                        }
-                        HarnessInbound::Ignore => {}
                     }
-                }
-                Err(error) => return Err(error.to_string()),
+                    Some(Err(error)) => return Err(error.to_string()),
+                    None => break,
+                },
+                _ = wait_until_deadline(ledger.deadline()) => ledger.due(Instant::now()),
+            };
+            for notice in notices {
+                deliver_harness_notice(app, state, notice);
             }
         }
         if !stream_refused || stream_delivered {
@@ -3238,31 +3240,34 @@ async fn watch_harness_events(
     let mut host =
         connect_harness_ws(&format!("{base}/api/events.host"), cookie.as_deref()).await?;
     loop {
-        tokio::select! {
-            frame = mux.next() => {
-                match frame {
-                    Some(Ok(message)) => {
-                        touch_harness_activity(state);
-                        if let Ok(text) = message.to_text() {
-                            apply_legacy_mux_frame(app, state, text, seen_interactions);
-                        }
+        let notices = tokio::select! {
+            biased;
+            frame = mux.next() => match frame {
+                Some(Ok(message)) => {
+                    touch_harness_activity(state);
+                    match message.to_text() {
+                        Ok(text) => route_legacy_mux_frame(text, ledger),
+                        Err(_) => Vec::new(),
                     }
-                    Some(Err(error)) => return Err(error.to_string()),
-                    None => return Ok(()),
                 }
-            }
-            frame = host.next() => {
-                match frame {
-                    Some(Ok(message)) => {
-                        touch_harness_activity(state);
-                        if let Ok(text) = message.to_text() {
-                            apply_legacy_host_frame(app, state, text, running_sessions);
-                        }
+                Some(Err(error)) => return Err(error.to_string()),
+                None => return Ok(()),
+            },
+            frame = host.next() => match frame {
+                Some(Ok(message)) => {
+                    touch_harness_activity(state);
+                    match message.to_text() {
+                        Ok(text) => route_legacy_host_frame(text, ledger),
+                        Err(_) => Vec::new(),
                     }
-                    Some(Err(error)) => return Err(error.to_string()),
-                    None => return Ok(()),
                 }
-            }
+                Some(Err(error)) => return Err(error.to_string()),
+                None => return Ok(()),
+            },
+            _ = wait_until_deadline(ledger.deadline()) => ledger.due(Instant::now()),
+        };
+        for notice in notices {
+            deliver_harness_notice(app, state, notice);
         }
     }
 }
@@ -3289,51 +3294,174 @@ fn events_stream_open_frame() -> String {
 /// checks, and notification text stay independent of the wire protocol.
 #[derive(Debug, Clone, PartialEq, Eq)]
 enum HarnessNotice {
-    /// A question or approval needs the user before the session can proceed.
+    /// A question, plan review or approval needs the user before the session can proceed.
     InteractionRequested {
         key: String,
         kind: NoticeKind,
+        session_id: Option<String>,
         detail: Option<String>,
     },
     /// A session switched between running and idle.
     SessionRunningChanged { session_id: String, running: bool },
+    /// An agent failed outside a durable turn position.
+    SessionFailed {
+        session_id: String,
+        detail: Option<String>,
+    },
+    /// A session is gone; whatever is still tracked for it belongs to nothing.
+    SessionRemoved { session_id: String },
+    /// A completion that waited out the debounce without being overtaken by an
+    /// interaction. Only the ledger derives this one.
+    TaskCompleted { session_id: String },
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum NoticeKind {
     Question,
+    PlanReview,
     Approval,
 }
 
-/// Route one semantic notice through dedup, running-state tracking, and the
-/// user's notification preferences.
-fn apply_harness_notice(
-    app: &AppHandle,
-    state: &HarnessState,
-    notice: HarnessNotice,
-    seen_interactions: &mut VecDeque<String>,
-    running_sessions: &mut HashMap<String, bool>,
-) {
+impl HarnessNotice {
+    /// The session a notice belongs to, where the wire payload says.
+    fn session_id(&self) -> Option<&str> {
+        match self {
+            HarnessNotice::InteractionRequested { session_id, .. } => session_id.as_deref(),
+            HarnessNotice::SessionRunningChanged { session_id, .. }
+            | HarnessNotice::SessionFailed { session_id, .. }
+            | HarnessNotice::SessionRemoved { session_id, .. }
+            | HarnessNotice::TaskCompleted { session_id } => Some(session_id),
+        }
+    }
+}
+
+/// How long a completion waits before it fires. A question, an approval or a
+/// failure that arrives right after "idle" describes the same turn of work, and
+/// one turn gets one banner: `error > interaction > completed`.
+const COMPLETION_DEBOUNCE: Duration = Duration::from_millis(300);
+
+/// What the watcher remembers about one Harness generation: which interactions
+/// already produced a banner, which sessions are running, and which completions
+/// are still waiting out the debounce.
+#[derive(Default)]
+struct AttentionLedger {
+    seen_interactions: VecDeque<String>,
+    running_sessions: HashMap<String, bool>,
+    pending_completions: HashMap<String, Instant>,
+    /// Sessions whose current turn already got a banner. A turn that ends in a
+    /// question, an approval or a failure still reports "idle" right afterwards,
+    /// and that idle must not stack a second banner onto the same turn.
+    attended_sessions: HashSet<String>,
+}
+
+impl AttentionLedger {
+    /// Route one semantic notice through dedup, running-state tracking and the
+    /// completion debounce, returning the notices that deserve a banner now.
+    fn route(&mut self, notice: HarnessNotice, now: Instant) -> Vec<HarnessNotice> {
+        match &notice {
+            HarnessNotice::InteractionRequested { key, .. } => {
+                if !is_new_interaction(&mut self.seen_interactions, key) {
+                    return Vec::new();
+                }
+            }
+            HarnessNotice::SessionRunningChanged {
+                session_id,
+                running,
+            } => {
+                let previous = self.running_sessions.insert(session_id.clone(), *running);
+                if *running {
+                    // The agent is working again, so whatever covered the
+                    // previous turn says nothing about this one.
+                    self.attended_sessions.remove(session_id);
+                    self.pending_completions.remove(session_id);
+                    return Vec::new();
+                }
+                // The first idle of a session is only a baseline: a page that
+                // just connected reports every already-idle session, and those
+                // are not tasks the user was waiting on.
+                if previous == Some(true) && !self.attended_sessions.contains(session_id) {
+                    self.pending_completions
+                        .insert(session_id.clone(), now + COMPLETION_DEBOUNCE);
+                }
+                return Vec::new();
+            }
+            HarnessNotice::SessionRemoved { session_id } => {
+                self.running_sessions.remove(session_id);
+                self.pending_completions.remove(session_id);
+                self.attended_sessions.remove(session_id);
+                return Vec::new();
+            }
+            HarnessNotice::SessionFailed { .. } | HarnessNotice::TaskCompleted { .. } => {}
+        }
+        // Anything that fires from here covers the turn it belongs to. An
+        // interaction the wire does not attribute to a session silences every
+        // waiting completion: dropping one is a missed reminder, but firing
+        // both is two banners for one turn, and that is the noisier mistake.
+        match notice.session_id() {
+            Some(session_id) => {
+                self.attended_sessions.insert(session_id.to_string());
+                self.pending_completions.remove(session_id);
+            }
+            None => self.pending_completions.clear(),
+        }
+        vec![notice]
+    }
+
+    /// The next deferred completion's deadline, if anything is waiting.
+    fn deadline(&self) -> Option<Instant> {
+        self.pending_completions.values().min().copied()
+    }
+
+    /// Completions whose wait has ended, in session order for determinism.
+    fn due(&mut self, now: Instant) -> Vec<HarnessNotice> {
+        let mut ready: Vec<String> = self
+            .pending_completions
+            .iter()
+            .filter(|(_, deadline)| **deadline <= now)
+            .map(|(session_id, _)| session_id.clone())
+            .collect();
+        ready.sort();
+        ready
+            .into_iter()
+            .filter_map(|session_id| {
+                self.pending_completions.remove(&session_id);
+                (!self.attended_sessions.contains(&session_id))
+                    .then_some(HarnessNotice::TaskCompleted { session_id })
+            })
+            .collect()
+    }
+
+    /// Forget a Harness generation's session state; the next backend says
+    /// nothing about the one before it.
+    fn reset(&mut self) {
+        self.running_sessions.clear();
+        self.pending_completions.clear();
+        self.attended_sessions.clear();
+    }
+}
+
+/// Wait for the next completion deadline, or park forever when none is waiting.
+async fn wait_until_deadline(deadline: Option<Instant>) {
+    match deadline {
+        Some(deadline) => {
+            tokio::time::sleep_until(tokio::time::Instant::from_std(deadline)).await;
+        }
+        None => futures_util::future::pending::<()>().await,
+    }
+}
+
+/// Deliver one routed notice: the badge and the banner the user asked for.
+fn deliver_harness_notice(app: &AppHandle, state: &HarnessState, notice: HarnessNotice) {
     match notice {
-        HarnessNotice::InteractionRequested {
-            key,
-            kind,
-            detail,
-        } => {
-            if !is_new_interaction(seen_interactions, &key) {
-                return;
-            }
-            on_needs_interaction(app, state, kind, detail.as_deref());
+        HarnessNotice::InteractionRequested { kind, detail, .. } => {
+            on_needs_interaction(app, state, kind, detail.as_deref())
         }
-        HarnessNotice::SessionRunningChanged {
-            session_id,
-            running,
-        } => {
-            let previous = running_sessions.insert(session_id.clone(), running);
-            if previous == Some(true) && !running {
-                on_task_completed(app, state, &session_id);
-            }
+        HarnessNotice::SessionFailed { detail, .. } => {
+            on_task_failed(app, state, detail.as_deref())
         }
+        HarnessNotice::TaskCompleted { session_id } => on_task_completed(app, state, &session_id),
+        // Bookkeeping the ledger already consumed; nothing fires from these.
+        HarnessNotice::SessionRunningChanged { .. } | HarnessNotice::SessionRemoved { .. } => {}
     }
 }
 
@@ -3357,7 +3485,9 @@ fn classify_mux_message(text: &str) -> HarnessInbound {
         return HarnessInbound::Ignore;
     };
     match envelope.get("type").and_then(|value| value.as_str()) {
-        Some("item") => classify_forwarded_value(envelope.get("value").unwrap_or(&serde_json::Value::Null)),
+        Some("item") => {
+            classify_forwarded_value(envelope.get("value").unwrap_or(&serde_json::Value::Null))
+        }
         // The events logical stream is the only one the shell opens; when it
         // ends or errors there is nothing left to observe on this socket.
         Some("end") | Some("error") => HarnessInbound::StreamFailed,
@@ -3379,9 +3509,17 @@ fn classify_forwarded_value(value: &serde_json::Value) -> HarnessInbound {
             let request = value.get("request").unwrap_or(&serde_json::Value::Null);
             let event_id = value.get("eventId").and_then(|value| value.as_str()).unwrap_or("");
             let detail = first_question_text(request);
+            // A plan review is a question with a decision attached; it needs the
+            // user the same way, but the banner should say what is waiting.
+            let kind = if questions_declare_plan_review(request) {
+                NoticeKind::PlanReview
+            } else {
+                NoticeKind::Question
+            };
             HarnessInbound::Notice(HarnessNotice::InteractionRequested {
                 key: interaction_key(request, event_id),
-                kind: NoticeKind::Question,
+                kind,
+                session_id: request_session_id(request),
                 detail,
             })
         }
@@ -3391,30 +3529,106 @@ fn classify_forwarded_value(value: &serde_json::Value) -> HarnessInbound {
             HarnessInbound::Notice(HarnessNotice::InteractionRequested {
                 key: interaction_key(request, event_id),
                 kind: NoticeKind::Approval,
+                session_id: request_session_id(request),
                 detail: approval_detail(request),
             })
         }
         Some(ForwardedEventKind::SessionStatus) => {
             // `api-session/status` emits `[sessionId, running]`.
-            let args = value.get("args").and_then(|value| value.as_array());
-            let session_id = args
-                .and_then(|items| items.first())
-                .and_then(|value| value.as_str());
-            let running = args
-                .and_then(|items| items.get(1))
-                .and_then(|value| value.as_bool());
-            match (session_id, running) {
-                (Some(session_id), Some(running)) if !session_id.is_empty() => {
+            let args = forwarded_args(value);
+            match (
+                first_session_id(&args),
+                args.get(1).and_then(|v| v.as_bool()),
+            ) {
+                (Some(session_id), Some(running)) => {
                     HarnessInbound::Notice(HarnessNotice::SessionRunningChanged {
-                        session_id: session_id.to_string(),
+                        session_id,
                         running,
                     })
                 }
                 _ => HarnessInbound::Ignore,
             }
         }
+        Some(ForwardedEventKind::SessionError) => {
+            // `api-session/error` emits `[sessionId, message]`, the message a
+            // user-safe failure chain.
+            let args = forwarded_args(value);
+            match first_session_id(&args) {
+                Some(session_id) => HarnessInbound::Notice(HarnessNotice::SessionFailed {
+                    session_id,
+                    detail: args
+                        .get(1)
+                        .and_then(|value| value.as_str())
+                        .map(str::to_string)
+                        .filter(|text| !text.is_empty()),
+                }),
+                None => HarnessInbound::Ignore,
+            }
+        }
+        Some(ForwardedEventKind::SessionRemoved) => {
+            // `api-session/removed` emits `[sessionId]`.
+            match first_session_id(&forwarded_args(value)) {
+                Some(session_id) => {
+                    HarnessInbound::Notice(HarnessNotice::SessionRemoved { session_id })
+                }
+                None => HarnessInbound::Ignore,
+            }
+        }
         None => HarnessInbound::Ignore,
     }
+}
+
+/// The positional arguments of a forwarded `emit` frame.
+fn forwarded_args(value: &serde_json::Value) -> Vec<serde_json::Value> {
+    value
+        .get("args")
+        .and_then(|value| value.as_array())
+        .cloned()
+        .unwrap_or_default()
+}
+
+/// The session id of a forwarded `api-session/*` frame, when it is a non-empty
+/// string in the leading position the gateway documents.
+fn first_session_id(args: &[serde_json::Value]) -> Option<String> {
+    args.first()
+        .and_then(|value| value.as_str())
+        .filter(|text| !text.is_empty())
+        .map(str::to_string)
+}
+
+/// Whether any question in an interaction asks for a plan review. `intent` is
+/// optional presentation metadata, so an absent one is an ordinary question.
+fn questions_declare_plan_review(request: &serde_json::Value) -> bool {
+    request
+        .get("questions")
+        .and_then(|value| value.as_array())
+        .map(|items| {
+            items.iter().any(|item| {
+                item.get("intent")
+                    .and_then(|intent| intent.get("kind"))
+                    .and_then(|kind| kind.as_str())
+                    == Some("plan-review")
+            })
+        })
+        .unwrap_or(false)
+}
+
+/// The session an interaction belongs to, where the payload carries one. Older
+/// generations put it on the request directly; newer ones project it through the
+/// agent identity.
+fn request_session_id(request: &serde_json::Value) -> Option<String> {
+    [
+        request.get("sessionId"),
+        request.get("session_id"),
+        request
+            .get("agent")
+            .and_then(|agent| agent.get("sessionId")),
+    ]
+    .into_iter()
+    .flatten()
+    .filter_map(|value| value.as_str())
+    .find(|text| !text.is_empty())
+    .map(str::to_string)
 }
 
 /// Forwarded events the shell reacts to, matched tolerantly across the names
@@ -3424,6 +3638,8 @@ enum ForwardedEventKind {
     Question,
     Approval,
     SessionStatus,
+    SessionError,
+    SessionRemoved,
 }
 
 fn forwarded_event_kind(event: &str) -> Option<ForwardedEventKind> {
@@ -3431,6 +3647,8 @@ fn forwarded_event_kind(event: &str) -> Option<ForwardedEventKind> {
         "user-questions/request" | "question/requested" => Some(ForwardedEventKind::Question),
         "approval/request" | "approval/requested" => Some(ForwardedEventKind::Approval),
         "api-session/status" | "host/session-status" => Some(ForwardedEventKind::SessionStatus),
+        "api-session/error" => Some(ForwardedEventKind::SessionError),
+        "api-session/removed" => Some(ForwardedEventKind::SessionRemoved),
         _ => None,
     }
 }
@@ -3454,22 +3672,12 @@ fn approval_detail(request: &serde_json::Value) -> Option<String> {
         .filter(|text| !text.is_empty())
 }
 
-/// Apply one raw legacy `events.mux` envelope (`{rpcId, payload:{type,...}}`).
-fn apply_legacy_mux_frame(
-    app: &AppHandle,
-    state: &HarnessState,
-    text: &str,
-    seen_interactions: &mut VecDeque<String>,
-) {
-    let Some(HarnessNotice::InteractionRequested { key, kind, detail }) =
-        classify_legacy_mux_frame(text)
-    else {
-        return;
-    };
-    if !is_new_interaction(seen_interactions, &key) {
-        return;
+/// Route one raw legacy `events.mux` envelope (`{rpcId, payload:{type,...}}`).
+fn route_legacy_mux_frame(text: &str, ledger: &mut AttentionLedger) -> Vec<HarnessNotice> {
+    match classify_legacy_mux_frame(text) {
+        Some(notice) => ledger.route(notice, Instant::now()),
+        None => Vec::new(),
     }
-    on_needs_interaction(app, state, kind, detail.as_deref());
 }
 
 /// Classify one raw legacy `events.mux` envelope without side effects.
@@ -3484,33 +3692,29 @@ fn classify_legacy_mux_frame(text: &str) -> Option<HarnessNotice> {
     match event_type {
         "question/requested" => Some(HarnessNotice::InteractionRequested {
             key: interaction_key(payload, rpc_id),
-            kind: NoticeKind::Question,
+            kind: if questions_declare_plan_review(payload) {
+                NoticeKind::PlanReview
+            } else {
+                NoticeKind::Question
+            },
+            session_id: request_session_id(payload),
             detail: first_question_text(payload),
         }),
         "approval/requested" => Some(HarnessNotice::InteractionRequested {
             key: interaction_key(payload, rpc_id),
             kind: NoticeKind::Approval,
+            session_id: request_session_id(payload),
             detail: None,
         }),
         _ => None,
     }
 }
 
-/// Apply one raw legacy `events.host` envelope.
-fn apply_legacy_host_frame(
-    app: &AppHandle,
-    state: &HarnessState,
-    text: &str,
-    running_sessions: &mut HashMap<String, bool>,
-) {
-    let Some(HarnessNotice::SessionRunningChanged { session_id, running }) =
-        classify_legacy_host_frame(text)
-    else {
-        return;
-    };
-    let previous = running_sessions.insert(session_id.clone(), running);
-    if previous == Some(true) && !running {
-        on_task_completed(app, state, &session_id);
+/// Route one raw legacy `events.host` envelope.
+fn route_legacy_host_frame(text: &str, ledger: &mut AttentionLedger) -> Vec<HarnessNotice> {
+    match classify_legacy_host_frame(text) {
+        Some(notice) => ledger.route(notice, Instant::now()),
+        None => Vec::new(),
     }
 }
 
@@ -3590,46 +3794,77 @@ fn current_language(state: &HarnessState) -> String {
         .unwrap_or_else(|_| "zh".to_string())
 }
 
+/// Whether a banner may go out at all: the master switch, this category's
+/// switch, and the user not already looking at the window.
+fn banners_allowed(app: &AppHandle, state: &HarnessState, category: &AtomicBool) -> bool {
+    state.notify_enabled.load(Ordering::Acquire)
+        && category.load(Ordering::Acquire)
+        && !window_is_focused(app)
+}
+
+/// Text lifted out of the Harness payload — a question's wording, a failure's
+/// message — is opt-in. A banner stays readable on the lock screen, where the
+/// project name, the command and the question are nobody's business but the
+/// user's.
+fn notice_detail<'a>(state: &HarnessState, detail: &'a str) -> Option<&'a str> {
+    state
+        .notify_detail
+        .load(Ordering::Acquire)
+        .then_some(detail)
+}
+
 fn on_needs_interaction(
     app: &AppHandle,
     state: &HarnessState,
     kind: NoticeKind,
-    question: Option<&str>,
+    detail: Option<&str>,
 ) {
-    if !state.notify_enabled.load(Ordering::Acquire)
-        || !state.notify_interaction.load(Ordering::Acquire)
-    {
-        return;
-    }
-    if window_is_focused(app) {
+    if !banners_allowed(app, state, &state.notify_interaction) {
         return;
     }
     let english = current_language(state) == "en";
-    let (title, body) = match (kind, english) {
-        (NoticeKind::Question, true) => (
-            "Needs your input",
-            question.unwrap_or("Harness is waiting for your answer"),
+    let (title, fallback) = match (kind, english) {
+        (NoticeKind::Question, true) => ("Needs your input", "Harness is waiting for your answer"),
+        (NoticeKind::Question, false) => ("需要你的输入", "Harness 正在等待你的回答"),
+        (NoticeKind::PlanReview, true) => (
+            "Plan needs your review",
+            "Harness has a plan waiting for your approval",
         ),
-        (NoticeKind::Question, false) => (
-            "需要你的输入",
-            question.unwrap_or("Harness 正在等待你的回答"),
-        ),
+        (NoticeKind::PlanReview, false) => ("计划等待你的确认", "Harness 有一份计划需要你确认"),
         (NoticeKind::Approval, true) => (
             "Needs your approval",
             "Harness needs your approval to continue",
         ),
         (NoticeKind::Approval, false) => ("需要你的批准", "Harness 需要你的批准才能继续"),
     };
+    // Only a plain question gains anything from being quoted back; an approval
+    // already says what it needs, and a plan review's first question is just the
+    // plan heading.
+    let preview = match kind {
+        NoticeKind::Question => detail.and_then(|detail| notice_detail(state, detail)),
+        NoticeKind::PlanReview | NoticeKind::Approval => None,
+    };
+    raise_attention(app, state, title, preview.unwrap_or(fallback));
+}
+
+fn on_task_failed(app: &AppHandle, state: &HarnessState, detail: Option<&str>) {
+    if !banners_allowed(app, state, &state.notify_error) {
+        return;
+    }
+    let english = current_language(state) == "en";
+    let (title, fallback) = if english {
+        ("Task failed", "The Harness task ended with an error")
+    } else {
+        ("任务执行失败", "Harness 的任务执行失败了")
+    };
+    let body = detail
+        .and_then(|detail| notice_detail(state, detail))
+        .unwrap_or(fallback);
     raise_attention(app, state, title, body);
 }
 
 fn on_task_completed(app: &AppHandle, state: &HarnessState, session_id: &str) {
-    if !state.notify_enabled.load(Ordering::Acquire)
-        || !state.notify_task_completed.load(Ordering::Acquire)
-    {
-        return;
-    }
-    if window_is_focused(app) {
+    if !banners_allowed(app, state, &state.notify_task_completed) {
         return;
     }
     let english = current_language(state) == "en";
@@ -3933,6 +4168,8 @@ fn set_notification_prefs(
     enabled: bool,
     task_completed: bool,
     interaction: bool,
+    error: bool,
+    detail: bool,
 ) {
     state.notify_enabled.store(enabled, Ordering::Release);
     state
@@ -3941,6 +4178,8 @@ fn set_notification_prefs(
     state
         .notify_interaction
         .store(interaction, Ordering::Release);
+    state.notify_error.store(error, Ordering::Release);
+    state.notify_detail.store(detail, Ordering::Release);
 }
 
 #[tauri::command]
@@ -3949,6 +4188,8 @@ fn notification_prefs(state: State<'_, HarnessState>) -> NotificationPrefsView {
         enabled: state.notify_enabled.load(Ordering::Acquire),
         task_completed: state.notify_task_completed.load(Ordering::Acquire),
         interaction: state.notify_interaction.load(Ordering::Acquire),
+        error: state.notify_error.load(Ordering::Acquire),
+        detail: state.notify_detail.load(Ordering::Acquire),
     }
 }
 
@@ -3991,10 +4232,7 @@ fn send_test_notification(app: AppHandle, state: State<'_, HarnessState>) {
             "This is how a task completion or a pending question will look.",
         )
     } else {
-        (
-            "通知已就绪",
-            "任务完成或需要你回应时，就会收到这样的提醒。",
-        )
+        ("通知已就绪", "任务完成或需要你回应时，就会收到这样的提醒。")
     };
     // The test button must not be gated by the per-category preferences: it
     // exists precisely to check the transport those preferences feed.
@@ -4544,11 +4782,7 @@ fn persist_macos_dock_icon(bundle: &Path, variant: DockIconVariant) -> bool {
         let Some(image) = dock_icon_image(variant) else {
             return false;
         };
-        workspace.setIcon_forFile_options(
-            Some(&image),
-            &path,
-            NSWorkspaceIconCreationOptions(0),
-        )
+        workspace.setIcon_forFile_options(Some(&image), &path, NSWorkspaceIconCreationOptions(0))
     };
     if written {
         workspace.noteFileSystemChanged_(&path);
@@ -4606,10 +4840,7 @@ fn set_dock_icon_variant(app: AppHandle, variant: String) -> Result<DockIconOutc
                 }
             }
         };
-        Ok(DockIconOutcome {
-            applied,
-            persisted,
-        })
+        Ok(DockIconOutcome { applied, persisted })
     }
 
     #[cfg(not(target_os = "macos"))]
@@ -5416,6 +5647,8 @@ pub fn run() {
         notify_enabled: Arc::new(AtomicBool::new(true)),
         notify_task_completed: Arc::new(AtomicBool::new(true)),
         notify_interaction: Arc::new(AtomicBool::new(true)),
+        notify_error: Arc::new(AtomicBool::new(true)),
+        notify_detail: Arc::new(AtomicBool::new(false)),
         pending_attention: Arc::new(AtomicI64::new(0)),
         language: Arc::new(Mutex::new("zh".to_string())),
     };
@@ -6269,16 +6502,19 @@ mod tests {
 
     #[test]
     fn mux_waterfall_frames_yield_interaction_notices() {
-        match classify_mux_message(&mux_question_item("user-questions/request", "evt-1").to_string())
-        {
+        match classify_mux_message(
+            &mux_question_item("user-questions/request", "evt-1").to_string(),
+        ) {
             HarnessInbound::Notice(HarnessNotice::InteractionRequested {
                 key,
                 kind,
+                session_id,
                 detail,
             }) => {
                 assert_eq!(key, "q:q-1");
                 assert_eq!(kind, NoticeKind::Question);
                 assert_eq!(detail.as_deref(), Some("继续吗？"));
+                assert_eq!(session_id, None);
             }
             other => panic!("unexpected inbound: {other:?}"),
         }
@@ -6287,11 +6523,13 @@ mod tests {
             HarnessInbound::Notice(HarnessNotice::InteractionRequested {
                 key,
                 kind,
+                session_id,
                 detail,
             }) => {
                 assert_eq!(key, "q:evt-2");
                 assert_eq!(kind, NoticeKind::Approval);
                 assert_eq!(detail.as_deref(), Some("bash"));
+                assert_eq!(session_id, None);
             }
             other => panic!("unexpected inbound: {other:?}"),
         }
@@ -6415,6 +6653,14 @@ mod tests {
             forwarded_event_kind("host/session-status"),
             Some(ForwardedEventKind::SessionStatus)
         ));
+        assert!(matches!(
+            forwarded_event_kind("api-session/error"),
+            Some(ForwardedEventKind::SessionError)
+        ));
+        assert!(matches!(
+            forwarded_event_kind("api-session/removed"),
+            Some(ForwardedEventKind::SessionRemoved)
+        ));
         assert!(forwarded_event_kind("unrelated/event").is_none());
     }
 
@@ -6433,6 +6679,7 @@ mod tests {
             Some(HarnessNotice::InteractionRequested {
                 key: "q:q-9".to_string(),
                 kind: NoticeKind::Question,
+                session_id: Some("s1".to_string()),
                 detail: Some("选择目录".to_string()),
             })
         );
@@ -6451,6 +6698,7 @@ mod tests {
             Some(HarnessNotice::InteractionRequested {
                 key: "a:ap-1".to_string(),
                 kind: NoticeKind::Approval,
+                session_id: Some("s1".to_string()),
                 detail: None,
             })
         );
@@ -6492,6 +6740,317 @@ mod tests {
             }
             other => panic!("unexpected inbound: {other:?}"),
         }
+    }
+
+    #[test]
+    fn mux_error_frames_yield_failure_notices() {
+        let frame = serde_json::json!({
+            "type": "item",
+            "streamId": "desk-events",
+            "value": {
+                "type": "emit",
+                "event": "api-session/error",
+                "args": ["sess-1", "Model request failed"]
+            }
+        });
+        assert_eq!(
+            classify_mux_message(&frame.to_string()),
+            HarnessInbound::Notice(HarnessNotice::SessionFailed {
+                session_id: "sess-1".to_string(),
+                detail: Some("Model request failed".to_string()),
+            })
+        );
+
+        // Without a session there is nothing to attribute the failure to.
+        let anonymous = serde_json::json!({
+            "type": "item",
+            "streamId": "desk-events",
+            "value": { "type": "emit", "event": "api-session/error", "args": [] }
+        });
+        assert_eq!(
+            classify_mux_message(&anonymous.to_string()),
+            HarnessInbound::Ignore
+        );
+    }
+
+    #[test]
+    fn mux_removed_frames_yield_session_cleanup_notices() {
+        let frame = serde_json::json!({
+            "type": "item",
+            "streamId": "desk-events",
+            "value": { "type": "emit", "event": "api-session/removed", "args": ["sess-9"] }
+        });
+        assert_eq!(
+            classify_mux_message(&frame.to_string()),
+            HarnessInbound::Notice(HarnessNotice::SessionRemoved {
+                session_id: "sess-9".to_string(),
+            })
+        );
+    }
+
+    #[test]
+    fn plan_review_questions_are_a_distinct_notice_kind() {
+        let plan = serde_json::json!({
+            "type": "item",
+            "streamId": "desk-events",
+            "value": {
+                "type": "waterfall",
+                "event": "user-questions/request",
+                "eventId": "evt-p",
+                "request": { "questions": [{
+                    "id": "q-1",
+                    "question": "按计划执行？",
+                    "intent": { "kind": "plan-review", "approve": "批准" }
+                }] }
+            }
+        });
+        match classify_mux_message(&plan.to_string()) {
+            HarnessInbound::Notice(HarnessNotice::InteractionRequested { kind, .. }) => {
+                assert_eq!(kind, NoticeKind::PlanReview);
+            }
+            other => panic!("unexpected inbound: {other:?}"),
+        }
+
+        // `intent` is optional presentation metadata; without it this is a plain
+        // question, and an unrelated intent must not read as a plan review.
+        assert_eq!(
+            question_notice_kind(&mux_question_item("user-questions/request", "evt-q")),
+            NoticeKind::Question,
+        );
+        let unrelated_intent = serde_json::json!({
+            "type": "item",
+            "streamId": "desk-events",
+            "value": {
+                "type": "waterfall",
+                "event": "user-questions/request",
+                "eventId": "evt-u",
+                "request": { "questions": [{
+                    "id": "q-1", "question": "选哪个？", "intent": { "kind": "something-new" }
+                }] }
+            }
+        });
+        assert_eq!(
+            question_notice_kind(&unrelated_intent),
+            NoticeKind::Question
+        );
+    }
+
+    fn question_notice_kind(frame: &serde_json::Value) -> NoticeKind {
+        match classify_mux_message(&frame.to_string()) {
+            HarnessInbound::Notice(HarnessNotice::InteractionRequested { kind, .. }) => kind,
+            other => panic!("unexpected inbound: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn interaction_notices_report_the_session_they_came_from() {
+        let frame = serde_json::json!({
+            "type": "item",
+            "streamId": "desk-events",
+            "value": {
+                "type": "waterfall",
+                "event": "approval/request",
+                "eventId": "evt-s",
+                "request": { "sessionId": "sess-7", "toolName": "bash" }
+            }
+        });
+        match classify_mux_message(&frame.to_string()) {
+            HarnessInbound::Notice(HarnessNotice::InteractionRequested { session_id, .. }) => {
+                assert_eq!(session_id.as_deref(), Some("sess-7"));
+            }
+            other => panic!("unexpected inbound: {other:?}"),
+        }
+
+        // Newer generations project the identity through the agent instead.
+        let projected = serde_json::json!({
+            "type": "item",
+            "streamId": "desk-events",
+            "value": {
+                "type": "waterfall",
+                "event": "approval/request",
+                "eventId": "evt-s2",
+                "request": { "agent": { "sessionId": "sess-8" }, "toolName": "bash" }
+            }
+        });
+        match classify_mux_message(&projected.to_string()) {
+            HarnessInbound::Notice(HarnessNotice::InteractionRequested { session_id, .. }) => {
+                assert_eq!(session_id.as_deref(), Some("sess-8"));
+            }
+            other => panic!("unexpected inbound: {other:?}"),
+        }
+    }
+
+    fn status(session_id: &str, running: bool) -> HarnessNotice {
+        HarnessNotice::SessionRunningChanged {
+            session_id: session_id.to_string(),
+            running,
+        }
+    }
+
+    fn approval(session_id: Option<&str>) -> HarnessNotice {
+        HarnessNotice::InteractionRequested {
+            key: format!("a:{}", session_id.unwrap_or("none")),
+            kind: NoticeKind::Approval,
+            session_id: session_id.map(str::to_string),
+            detail: Some("bash".to_string()),
+        }
+    }
+
+    fn completed(session_id: &str) -> HarnessNotice {
+        HarnessNotice::TaskCompleted {
+            session_id: session_id.to_string(),
+        }
+    }
+
+    #[test]
+    fn first_idle_only_sets_a_baseline() {
+        // A page that just connected reports every already-idle session; none of
+        // them is a task the user was waiting on.
+        let mut ledger = AttentionLedger::default();
+        let now = Instant::now();
+        assert!(ledger.route(status("sess-1", false), now).is_empty());
+        assert!(ledger.deadline().is_none());
+        assert!(ledger.due(now + COMPLETION_DEBOUNCE).is_empty());
+    }
+
+    #[test]
+    fn one_completion_fires_after_the_wait_and_never_again() {
+        let mut ledger = AttentionLedger::default();
+        let now = Instant::now();
+        for running in [true, true, false, false] {
+            assert!(ledger.route(status("sess-1", running), now).is_empty());
+        }
+        assert!(
+            ledger.due(now).is_empty(),
+            "the completion waits for its window"
+        );
+        assert_eq!(ledger.deadline(), Some(now + COMPLETION_DEBOUNCE));
+        assert_eq!(
+            ledger.due(now + COMPLETION_DEBOUNCE),
+            vec![completed("sess-1")]
+        );
+        assert!(ledger.due(now + COMPLETION_DEBOUNCE * 2).is_empty());
+    }
+
+    #[test]
+    fn an_interaction_covers_the_completion_of_the_same_turn() {
+        // The order Harness actually sends: the agent parks on the approval and
+        // only then reports idle. One turn, one banner.
+        let mut ledger = AttentionLedger::default();
+        let now = Instant::now();
+        ledger.route(status("sess-1", true), now);
+        assert_eq!(
+            ledger.route(approval(Some("sess-1")), now),
+            vec![approval(Some("sess-1"))]
+        );
+        assert!(ledger.route(status("sess-1", false), now).is_empty());
+        assert!(ledger.due(now + COMPLETION_DEBOUNCE * 2).is_empty());
+    }
+
+    #[test]
+    fn an_interaction_arriving_inside_the_window_replaces_the_completion() {
+        let mut ledger = AttentionLedger::default();
+        let now = Instant::now();
+        ledger.route(status("sess-1", true), now);
+        assert!(ledger.route(status("sess-1", false), now).is_empty());
+        assert_eq!(
+            ledger.route(approval(Some("sess-1")), now),
+            vec![approval(Some("sess-1"))]
+        );
+        assert!(ledger.due(now + COMPLETION_DEBOUNCE * 2).is_empty());
+    }
+
+    #[test]
+    fn a_failure_covers_the_completion_of_the_same_turn() {
+        let mut ledger = AttentionLedger::default();
+        let now = Instant::now();
+        ledger.route(status("sess-1", true), now);
+        let failure = HarnessNotice::SessionFailed {
+            session_id: "sess-1".to_string(),
+            detail: Some("boom".to_string()),
+        };
+        assert_eq!(ledger.route(failure.clone(), now), vec![failure]);
+        assert!(ledger.route(status("sess-1", false), now).is_empty());
+        assert!(ledger.due(now + COMPLETION_DEBOUNCE * 2).is_empty());
+    }
+
+    #[test]
+    fn a_new_turn_clears_the_previous_one() {
+        let mut ledger = AttentionLedger::default();
+        let now = Instant::now();
+        ledger.route(status("sess-1", true), now);
+        ledger.route(approval(Some("sess-1")), now);
+        // The user approves, the agent resumes, and the turn that follows is
+        // genuinely new work whose completion is worth reporting.
+        ledger.route(status("sess-1", true), now);
+        ledger.route(status("sess-1", false), now);
+        assert_eq!(
+            ledger.due(now + COMPLETION_DEBOUNCE),
+            vec![completed("sess-1")]
+        );
+    }
+
+    #[test]
+    fn a_removed_session_stops_producing_notices() {
+        let mut ledger = AttentionLedger::default();
+        let now = Instant::now();
+        ledger.route(status("sess-1", true), now);
+        ledger.route(status("sess-1", false), now);
+        ledger.route(
+            HarnessNotice::SessionRemoved {
+                session_id: "sess-1".to_string(),
+            },
+            now,
+        );
+        assert!(ledger.deadline().is_none());
+        assert!(ledger.due(now + COMPLETION_DEBOUNCE * 2).is_empty());
+        // A replayed status for the dead session is a baseline again, not a
+        // completion borrowed from the session that used to own it.
+        assert!(ledger.route(status("sess-1", false), now).is_empty());
+    }
+
+    #[test]
+    fn pending_completions_are_tracked_per_session() {
+        let mut ledger = AttentionLedger::default();
+        let now = Instant::now();
+        for session in ["sess-a", "sess-b"] {
+            ledger.route(status(session, true), now);
+            ledger.route(status(session, false), now);
+        }
+        // An interaction for one session must not silence the other's completion.
+        ledger.route(approval(Some("sess-a")), now);
+        let due = ledger.due(now + COMPLETION_DEBOUNCE);
+        assert_eq!(due, vec![completed("sess-b")]);
+    }
+
+    #[test]
+    fn a_replayed_interaction_banners_once() {
+        // Reconnects re-deliver still-pending requests: the second pass must be
+        // silent, and the turn it covers must still not produce a completion.
+        let mut ledger = AttentionLedger::default();
+        let now = Instant::now();
+        ledger.route(status("sess-1", true), now);
+        assert_eq!(ledger.route(approval(Some("sess-1")), now).len(), 1);
+        assert!(
+            ledger.route(approval(Some("sess-1")), now).is_empty(),
+            "reconnect replay"
+        );
+        assert!(ledger.route(status("sess-1", false), now).is_empty());
+        assert!(ledger.due(now + COMPLETION_DEBOUNCE).is_empty());
+    }
+
+    #[test]
+    fn reset_forgets_the_previous_backend() {
+        let mut ledger = AttentionLedger::default();
+        let now = Instant::now();
+        ledger.route(status("sess-1", true), now);
+        ledger.route(status("sess-1", false), now);
+        ledger.route(approval(Some("sess-2")), now);
+        ledger.reset();
+        assert!(ledger.deadline().is_none());
+        // Dedup keys survive on purpose: dsh replays still-pending requests to
+        // the new connection, and a replay must not raise a second banner.
+        assert!(ledger.route(approval(Some("sess-2")), now).is_empty());
     }
 
     fn disposition(url: &str) -> NavigationDisposition {

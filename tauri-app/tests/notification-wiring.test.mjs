@@ -39,7 +39,7 @@ assert.match(
 // open: mux frames go through the classifier and then the semantic layer.
 assert.match(
   rustSource,
-  /match classify_mux_message\(text\) \{[\s\S]{0,400}?HarnessInbound::Notice\(notice\) =>[\s\S]{0,400}?apply_harness_notice\(/,
+  /match classify_mux_message\(text\) \{[\s\S]{0,400}?HarnessInbound::Notice\(notice\) =>[\s\S]{0,400}?ledger\.route\(/,
   "mux frames must be classified and routed through the semantic layer",
 );
 
@@ -51,6 +51,8 @@ for (const name of [
   "approval/requested",
   "api-session/status",
   "host/session-status",
+  "api-session/error",
+  "api-session/removed",
 ]) {
   assert.ok(
     rustSource.includes(`"${name}"`),
@@ -73,8 +75,77 @@ assert.match(
 // reconnect loop now.
 assert.match(
   rustSource,
-  /let mut seen_interactions = VecDeque::new\(\);\s*let mut running_sessions = HashMap::new\(\);\s*loop \{/,
+  /let mut ledger = AttentionLedger::default\(\);\s*loop \{/,
   "dedup and session state must outlive a single stream connection",
+);
+// A backend that went away says nothing about the next one.
+assert.match(
+  rustSource,
+  /ledger\.reset\(\);/,
+  "session state must be dropped when the Harness stops",
+);
+
+// --- one turn gets one banner ----------------------------------------------
+// The completion is only reported after it has waited for the interaction or
+// failure that may describe the same turn of work.
+assert.match(
+  rustSource,
+  /const COMPLETION_DEBOUNCE: Duration = Duration::from_millis\((\d{2,})\)/,
+  "a completion must wait out a debounce window before it fires",
+);
+assert.match(
+  rustSource,
+  /struct AttentionLedger \{[\s\S]*?pending_completions: HashMap<String, Instant>,[\s\S]*?attended_sessions: HashSet<String>,/,
+  "the ledger must track both waiting completions and turns already covered",
+);
+// The first idle a page reports is a baseline, not a finished task.
+assert.match(
+  rustSource,
+  /if previous == Some\(true\) && !self\.attended_sessions\.contains\(session_id\) \{/,
+  "only a running session that goes idle may complete",
+);
+assert.match(
+  rustSource,
+  /fn wait_until_deadline\(deadline: Option<Instant>\)/,
+  "the read loop must wait for the socket and the debounce together",
+);
+assert.match(
+  rustSource,
+  /_ = wait_until_deadline\(ledger\.deadline\(\)\) => ledger\.due\(Instant::now\(\)\),/,
+  "both stream paths must actually collect due completions",
+);
+
+// --- every reminder kind has wording --------------------------------------
+for (const kind of ["Question", "PlanReview", "Approval"]) {
+  assert.match(
+    rustSource,
+    new RegExp(`NoticeKind::${kind}`),
+    `${kind} must be a distinct notice kind`,
+  );
+}
+assert.match(
+  rustSource,
+  /fn on_task_failed\(/,
+  "a failed task must have its own banner path",
+);
+assert.match(
+  rustSource,
+  /"计划等待你的确认"/,
+  "plan review needs Chinese wording",
+);
+assert.match(
+  rustSource,
+  /"任务执行失败"/,
+  "a failure needs Chinese wording",
+);
+assert.ok(
+  /fn on_needs_interaction[\s\S]*?\n}\n/.test(rustSource),
+  "interaction wording must live in one place",
+);
+assert.match(
+  rustSource,
+  /NoticeKind::PlanReview \| NoticeKind::Approval => None,\n\s*\};\n\s*raise_attention\(app, state, title, preview\.unwrap_or\(fallback\)\);/,
+  "only a plain question may quote Harness text back",
 );
 
 // --- macOS delivery goes through UNUserNotificationCenter -------------------
@@ -190,5 +261,66 @@ assert.match(
   /id="notify-test-send"/,
   "the settings page must expose the test button",
 );
+
+// --- the two new categories are settable and defaulted safely ---------------
+assert.match(
+  rustSource,
+  /fn set_notification_prefs\(\s*state: State<'_, HarnessState>,\s*enabled: bool,\s*task_completed: bool,\s*interaction: bool,\s*error: bool,\s*detail: bool,\s*\)/,
+  "the backend must accept every notification category",
+);
+assert.match(
+  rustSource,
+  /notify_error: Arc::new\(AtomicBool::new\(true\)\),\s*notify_detail: Arc::new\(AtomicBool::new\(false\)\),/,
+  "errors default to on, and quoting Harness text defaults to off",
+);
+assert.match(
+  rustSource,
+  /struct NotificationPrefsView \{[^}]*?error: bool,\s*detail: bool,\s*\}/,
+  "the prefs view must report the new categories",
+);
+assert.match(
+  mainSource,
+  /notifyError: localStorage\.getItem\("notifyError"\) !== "false",/,
+  "the shell must keep errors on unless the user turns them off",
+);
+// A stored "false" must not read as true: the default-off categories have to
+// compare against "true", not against "false".
+assert.match(
+  mainSource,
+  /notifyDetail: localStorage\.getItem\("notifyDetail"\) === "true",/,
+  "the detail preview must stay off unless the user explicitly turned it on",
+);
+assert.match(
+  mainSource,
+  /error: state\.notifyError,\s*detail: state\.notifyDetail,/,
+  "both new categories must reach the backend",
+);
+for (const id of ["notify-error-toggle", "notify-detail-toggle"]) {
+  assert.ok(htmlSource.includes(`id="${id}"`), `the settings page needs #${id}`);
+  assert.ok(
+    mainSource.includes(`#${id}`),
+    `the shell must bind #${id}`,
+  );
+}
+// The privacy rule is enforced where the banner is built, not in the UI.
+assert.match(
+  rustSource,
+  /fn notice_detail<'a>\(state: &HarnessState, detail: &'a str\) -> Option<&'a str>/,
+  "payload text must pass one gate before it can reach a banner",
+);
+assert.match(
+  rustSource,
+  /let body = detail\s*\.and_then\(\|detail\| notice_detail\(state, detail\)\)\s*\.unwrap_or\(fallback\);/,
+  "a failure message must fall back to generic wording when details are off",
+);
+// Both languages need labels for the new rows.
+const i18nSource = readFileSync(resolve(root, "src/i18n.js"), "utf8");
+for (const key of ["advanced.notifyError", "advanced.notifyErrorDesc", "advanced.notifyDetail", "advanced.notifyDetailDesc"]) {
+  assert.equal(
+    [...i18nSource.matchAll(new RegExp(`"${key}":`, "g"))].length,
+    2,
+    `${key} must exist in both languages`,
+  );
+}
 
 console.log("✓ the notification pipeline is wired end to end");
