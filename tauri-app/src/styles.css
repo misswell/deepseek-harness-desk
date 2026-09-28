@@ -122,12 +122,7 @@ select:focus-visible {
   z-index: 2;
   top: 42px;
   left: 50%;
-  padding: 7px 11px;
-  border: 1px solid var(--separator);
-  border-radius: 7px;
   color: var(--muted);
-  background: var(--surface);
-  box-shadow: 0 5px 16px rgba(0, 0, 0, 0.1);
   font-size: 12px;
   transform: translateX(-50%);
   -webkit-app-region: no-drag;
@@ -142,120 +137,119 @@ select:focus-visible {
   align-items: center;
   justify-content: center;
   padding: 52px 34px 34px;
-  background: var(--window);
+  /* Mirror the boot palette of the Harness web client's own loading page
+     (dsh-client-web AppRoot), so the Desk prelude and the embedded boot page
+     read as one continuous screen. */
+  --boot-bg: #ffffff;
+  --boot-label-primary: #0f1115;
+  --boot-label-secondary: #61666b;
+  --boot-label-tertiary: #81858c;
+  --boot-border: rgb(0 0 0 / 10%);
+  --boot-brand: #0f1115;
+  background: var(--boot-bg);
 }
 
-.startup-card {
+.startup-stack {
+  display: flex;
   width: min(470px, 100%);
-  padding: 31px 34px 28px;
-  border: 1px solid var(--separator);
-  border-radius: 12px;
-  background: var(--surface);
-  box-shadow: var(--shadow);
+  flex-direction: column;
+  align-items: center;
+  gap: 16px;
   text-align: center;
   -webkit-app-region: no-drag;
 }
 
-.brand-mark,
-.error-mark {
-  display: grid;
-  place-items: center;
-  width: 52px;
-  height: 52px;
-  margin: 0 auto 17px;
-  border-radius: 13px;
-  color: #ffffff;
-  background: var(--accent);
-  font-size: 26px;
-  font-weight: 800;
-  letter-spacing: -0.08em;
-}
-
-.error-mark {
-  color: var(--danger);
-  background: rgba(201, 52, 62, 0.12);
-  font-size: 25px;
+.boot-wordmark {
+  color: var(--boot-label-primary);
+  font-size: 16px;
+  line-height: 24px;
+  font-weight: 600;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
 }
 
 .spinner {
-  width: 17px;
-  height: 17px;
-  margin: 0 auto 14px;
-  border: 2px solid rgba(0, 122, 255, 0.2);
-  border-top-color: var(--accent);
+  position: relative;
+  width: 20px;
+  height: 20px;
+  border: 2px solid var(--boot-border);
   border-radius: 50%;
   animation: spin 800ms linear infinite;
 }
 
-.startup-card h1 {
-  margin: 0 0 8px;
-  color: var(--ink);
-  font-size: 20px;
-  font-weight: 650;
-  letter-spacing: -0.025em;
+.spinner::after {
+  content: "";
+  position: absolute;
+  inset: -2px;
+  border-radius: inherit;
+  background: conic-gradient(var(--boot-brand) var(--boot-arc, 72deg), transparent 0);
+  -webkit-mask: radial-gradient(farthest-side, transparent calc(100% - 2px), #000 0);
+  mask: radial-gradient(farthest-side, transparent calc(100% - 2px), #000 0);
 }
 
-.startup-card p {
-  min-height: 36px;
-  margin: 0 auto 21px;
-  color: var(--muted);
-  font-size: 13px;
-  line-height: 1.55;
+.startup-stack h1 {
+  margin: 0;
+  color: var(--boot-label-primary);
+  font-size: 14px;
+  line-height: 22px;
+  font-weight: 600;
+}
+
+.startup-stack p {
+  margin: -6px 0 0;
+  max-width: 400px;
+  color: var(--boot-label-tertiary);
+  font-size: 12px;
+  line-height: 18px;
   overflow-wrap: anywhere;
 }
 
-.error-card p {
+/* Failure details play the role of the boot page's failed items: monospaced,
+   secondary-label text on the same flat background. */
+#error-message {
   max-height: 120px;
+  margin: -6px 0 0;
   overflow: auto;
+  color: var(--boot-label-secondary);
+  font-family: "SF Mono", "JetBrains Mono", "Fira Code", Consolas, "Liberation Mono", Menlo, Courier,
+    "PingFang SC", "Microsoft YaHei";
+  font-size: 12px;
   white-space: pre-wrap;
 }
 
 .startup-status {
   display: flex;
   flex-direction: column;
-  gap: 0;
-  margin: 0 auto 22px;
-  padding: 4px 13px;
-  border: 1px solid var(--separator-light);
-  border-radius: 8px;
-  background: rgba(233, 233, 235, 0.44);
-  background: color-mix(in srgb, var(--control) 44%, transparent);
+  gap: 9px;
+  margin: 2px 0 0;
   text-align: left;
 }
 
 .status-row {
   display: flex;
-  align-items: center;
+  align-items: baseline;
   justify-content: space-between;
-  gap: 16px;
-  min-height: 31px;
-  color: var(--muted);
+  gap: 24px;
+  color: var(--boot-label-tertiary);
   font-size: 12px;
-}
-
-.status-row + .status-row {
-  border-top: 1px solid var(--separator-light);
+  line-height: 18px;
 }
 
 .status-row strong {
-  color: var(--ink);
+  color: var(--boot-label-secondary);
   font-size: 12px;
-  font-weight: 600;
+  line-height: 18px;
+  font-weight: 500;
+  font-variant-numeric: tabular-nums;
   text-align: right;
-}
-
-.status-row strong.available {
-  color: var(--green);
-}
-
-.status-row strong.missing {
-  color: var(--danger);
+  overflow-wrap: anywhere;
 }
 
 .startup-actions {
   display: flex;
   justify-content: center;
   gap: 8px;
+  margin: 6px 0 0;
 }
 
 .primary-button,
@@ -308,6 +302,40 @@ select:focus-visible {
 button:disabled {
   cursor: default;
   opacity: 0.42;
+}
+
+/* The boot screens keep the Harness boot palette, so their buttons stay
+   monochrome instead of using the app accent. */
+.startup-view .primary-button,
+.error-view .primary-button {
+  border-color: transparent;
+  color: var(--boot-bg);
+  background: var(--boot-label-primary);
+}
+
+.startup-view .primary-button:hover:not(:disabled),
+.error-view .primary-button:hover:not(:disabled) {
+  border-color: transparent;
+  background: color-mix(in srgb, var(--boot-label-primary) 86%, var(--boot-bg));
+}
+
+.startup-view .secondary-button,
+.error-view .secondary-button {
+  border-color: var(--boot-border);
+  color: var(--boot-label-secondary);
+  background: transparent;
+}
+
+.startup-view .secondary-button:hover:not(:disabled),
+.error-view .secondary-button:hover:not(:disabled) {
+  border-color: var(--boot-label-tertiary);
+  color: var(--boot-label-primary);
+  background: transparent;
+}
+
+.startup-view button:focus-visible,
+.error-view button:focus-visible {
+  outline-color: color-mix(in srgb, var(--boot-label-primary) 55%, transparent);
 }
 
 .compact-button {
@@ -891,10 +919,6 @@ button:disabled {
 }
 
 @media (max-width: 560px) {
-  .startup-card {
-    padding: 27px 22px 24px;
-  }
-
   .startup-actions {
     flex-direction: column;
   }
@@ -976,7 +1000,7 @@ button:disabled {
 }
 
 :root[data-theme="dark"] .frame-container {
-  background: #1c1c1e;
+  background: #151517;
 }
 
 /* Keep the blank/loading iframe surface dark as well, so even a document that
@@ -986,9 +1010,16 @@ button:disabled {
   color-scheme: dark;
 }
 
-:root[data-theme="dark"] .startup-status {
-  background: rgba(58, 58, 60, 0.58);
-  background: color-mix(in srgb, var(--control) 58%, transparent);
+/* Same values as body[data-ds-dark-theme] boot variables in the Harness web
+   client, so the Desk prelude is pixel-continuous with the embedded boot page. */
+:root[data-theme="dark"] .startup-view,
+:root[data-theme="dark"] .error-view {
+  --boot-bg: #151517;
+  --boot-label-primary: #f9fafb;
+  --boot-label-secondary: #cfd3d6;
+  --boot-label-tertiary: #adb2b8;
+  --boot-border: rgb(255 255 255 / 12%);
+  --boot-brand: #f9fafb;
 }
 
 :root[data-theme="dark"] .setting-row input[type="checkbox"] {

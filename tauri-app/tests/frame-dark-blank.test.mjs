@@ -35,7 +35,7 @@ assert.match(
 );
 assert.match(
   styles,
-  /:root\[data-theme="dark"\] \.frame-container \{[^}]*background:\s*#1c1c1e/,
+  /:root\[data-theme="dark"\] \.frame-container \{[^}]*background:\s*#151517/,
   "the dark theme must keep the frame container dark",
 );
 

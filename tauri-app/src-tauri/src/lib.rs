@@ -5306,10 +5306,13 @@ fn create_main_window<R: tauri::Runtime>(app: &AppHandle<R>) -> tauri::Result<We
 }
 
 fn window_background_color(theme: Theme) -> Color {
+    // Matches the startup view's Harness boot palette: #151517 dark / #ffffff
+    // light (the web client's own boot page uses the same colors), so the
+    // native layer before first paint never clashes with the prelude screen.
     if matches!(theme, Theme::Dark) {
-        Color(28, 28, 30, 255)
+        Color(21, 21, 23, 255)
     } else {
-        Color(245, 245, 247, 255)
+        Color(255, 255, 255, 255)
     }
 }
 
@@ -5874,9 +5877,9 @@ mod tests {
     fn window_background_colors_follow_system_theme() {
         assert_eq!(
             window_background_color(Theme::Light),
-            Color(245, 245, 247, 255)
+            Color(255, 255, 255, 255)
         );
-        assert_eq!(window_background_color(Theme::Dark), Color(28, 28, 30, 255));
+        assert_eq!(window_background_color(Theme::Dark), Color(21, 21, 23, 255));
     }
 
     #[test]
